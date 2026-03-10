@@ -1,0 +1,39 @@
+# ── Credentials — NEVER commit these ──────────────────────────────────────────
+credentials.json
+gdelt_credentials.json
+*.key
+*.pem
+secrets.json
+.env
+
+# ── Databases — too large for git ─────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Large data files ───────────────────────────────────────────────────────────
+aircraft-database-complete.csv
+
+# ── Reference PDFs — not source code ──────────────────────────────────────────
+*.pdf
+
+# ── Converted text versions of PDFs ───────────────────────────────────────────
+api_catalogue.txt
+cameo_manual.txt
+gdelt_codebook.txt
+
+# ── macOS junk ─────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# ── Streamlit ──────────────────────────────────────────────────────────────────
+.streamlit/secrets.toml

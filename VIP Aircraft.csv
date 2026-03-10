@@ -1,0 +1,17 @@
+tail_number,icao24,country,operator,aircraft_type,category,signal_value,notes
+A6-MMM,8960ae,UAE,UAE Presidential Flight,B744,diplomatic,high,Boeing 747-400 — ministers royals and diplomatic missions
+A7-HHE,06a0a2,Qatar,Qatar Amiri Flight,B748,diplomatic,high,Boeing 747-8 — royal family state transport
+EP-AJA,730541,Iran,Iranian Government,A343,diplomatic,high,Airbus A340-300 — state delegations VIP transport
+A9C-BRF,8940b7,Bahrain,Bahrain Royal Flight,RJ70,diplomatic,high,BAe Avro RJ70 — royal flight
+RA-76363,152a4b,Russia,EMERCOM,IL76,strategic_lift,medium,IL-76 — disaster response and humanitarian flights
+ZE707,43c704,UK,RAF,B462,diplomatic,medium,BAe 146 — RAF VIP transport
+OO-FAE,449825,Belgium,Belgian Air Force,FA7X,diplomatic,medium,Falcon 7X — ministers and diplomats
+LZ-001,,Bulgaria,Bulgarian Government,F900,diplomatic,low,Government transport — ICAO24 not found in database
+40787,,USA,USAF,E4B,command,high,National Airborne Operations Center — Doomsday plane — needs ICAO24
+33125,,USA,USAF,C17,strategic_lift,medium,AMC Joint Base McGuire-Dix-Lakehurst — needs ICAO24
+330002,,Canada,RCAF,A332,tanker_transport,medium,CC-330 Airbus A330 MRTT — needs ICAO24
+40142,,USA,USAF,C12,isr,medium,RC-12 ISR aircraft Scott AFB — needs ICAO24
+86852,,China,PLA Air Force,IL76,strategic_lift,medium,Chinese military transport — needs ICAO24
+UR-65718,,Ukraine,Ukrainian Government,T154,diplomatic,medium,Tu-154 state transport — ICAO24 not found
+5U-BAG,,Niger,Government of Niger,unknown,diplomatic,low,Government aircraft — ICAO24 not found
+4D-MNE,,Austria,Private/VIP,unknown,diplomatic,low,Private VIP jet — needs ICAO24
