@@ -28,6 +28,12 @@ gdelt_codebook.txt
 Using Laminar API for NOTAMs.md
 opensky-api/
 package-lock.json
+project ideas.md
+
+# ── Logs ───────────────────────────────────────────────────────────────────────
+*.log
+logs/
+nohup.out
 
 # ── macOS junk ─────────────────────────────────────────────────────────────────
 .DS_Store
