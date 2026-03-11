@@ -1,0 +1,1410 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "NOTAM Data v2",
+    "description": "## Introduction\nThe NOTAM Data APIs, part of the [Laminar Data Hub](/apis/laminar-data-hub/overview) provides information on the current set of Notice to Airmen (NOTAM) alerts that have been issued.\n\nThere are many different types of NOTAMs in the aviation industry all of which are difficult to decipher. Some are mandatory or regulatory in nature, others advise pilots and other airspace operators, such as drone operators, of a closed airspace or runway, obstacles, or even alert airports and airlines about a nearby flock of birds.\n\nThe NOTAM APIs provide global coverage.\n\nPlease note that the NOTAM APIs cache responses for 60 seconds.\n\nTo request a compressed response from the NOTAM APIs, add the header ```Accept-Encoding: gzip``` to your request.\n\nThe service confirms that responses are compressed by including the response header ```Content-Encoding: gzip```.\n\n## Licensing\nThe NOTAM Data APIs currently require a contract to use. \n\n## Schemas\nClick the download button at the top of this document to download the OpenApi spec for this API.\n\n## Related articles\n[What is a NOTAM?](/apis/data/what-is-a-Notice-To-Airmen) - Explanation of NOTAMs\n\n[Displaying NOTAMs and traffic restrictions](/showcase/displaying-NOTAMs-and-restrictions) - Showcase article on how to display NOTAMs and traffic restrictions\n\n## Similar APIs\n",
+    "termsOfService": "https://developer.laminardata.aero/admin/account/termsofservice",
+    "contact": {
+      "name": "Cirium Help Desk",
+      "url": "https://helpdesk.cirium.com/"
+    },
+    "version": "1.1.0"
+  },
+  "paths": {
+    "/icao-prefixes/{icao.prefix}/firs/{fir.icao}/notams": {
+      "get": {
+        "tags": [
+          "NOTAMs by Flight Information Region"
+        ],
+        "summary": "NOTAMs by flight information region",
+        "operationId": "notamsByFIR",
+        "description": "Retrieves a list of all NOTAMs for a given FIR in a GeoJSON response format.\n",
+        "parameters": [
+          {
+            "name": "Accept",
+            "in": "header",
+            "description": "Sets the Accept header to request a specific content-type in the response",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "application/json"
+              ]
+            }
+          },
+          {
+            "name": "icao.prefix",
+            "in": "path",
+            "description": "First letter of the ICAO designator e.g. E (Case sensitive)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fir.icao",
+            "in": "path",
+            "description": "ICAO code of the FIR e.g. EGTT (Case sensitive)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "qcode",
+            "in": "query",
+            "description": "The Q-Code or selection code such as QOBCE to obtain obstacle related NOTAMs.\n\nAdding a Q-Code parameter will return only NOTAMS with the specified Q-Code.\n\nQ-Code rules:\n- MUST start with a 'Q'\n- MUST be five characters\n- MUST be entered if 'TEXT_CONTAINS' is empty'\n",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "text_contains",
+            "in": "query",
+            "description": "Searches the 'text' field in the NOTAM response and returns only NOTAMs with text containing the specified values.\n\nMultiple phrases can be searched for, by using a comma separated listed such as GPS,OBST. In this case, it returns only NOTAMs with text containing all the words.\n\nText Contains rules:\n- MUST have less than 21 characters\n- MUST only contain alphanumeric characters or commas\n- MUST be entered if 'Q-Code' is empty'\n",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_key",
+            "in": "query",
+            "description": "User Key Authentication Parameter",
+            "required": true,
+            "threescale_name": "user_keys",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "NOTAMs by FIR Success Response",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "cache-control": {
+                "description": "Used to specify directives for caching mechanisms",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/successResponseNotam"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request sent was not understood by the system",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/badRequestFailureResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request sent could not be authenticated by the system",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authenticationFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/aerodromes/{aerodrome.icao}/notams": {
+      "get": {
+        "tags": [
+          "NOTAMs by Aerodrome"
+        ],
+        "summary": "NOTAMs by aerodrome",
+        "operationId": "notamsByAerodrome",
+        "description": "Retrieves a list of all NOTAMs for a given aerodrome in a GeoJSON response format.\n",
+        "parameters": [
+          {
+            "name": "Accept",
+            "in": "header",
+            "description": "Sets the Accept header to request a specific content-type in the response",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "application/json"
+              ]
+            }
+          },
+          {
+            "name": "aerodrome.icao",
+            "in": "path",
+            "description": "The ICAO code for an aerodrome e.g. EGLL\n\nAerodrome ICAO rules:\n- MUST be letters (case insensitive)\n- MUST be only four characters\n",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "qcode",
+            "in": "query",
+            "description": "The Q-Code or selection code such as QOBCE to obtain obstacle related NOTAMs.\n\nAdding a Q-Code parameter will return only NOTAMS with the specified Q-Code.\n\nQ-Code rules:\n- MUST start with a 'Q'\n- MUST be five characters\n- MUST be entered if 'TEXT_CONTAINS' is empty\n",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "text_contains",
+            "in": "query",
+            "description": "Searches the 'text' field in the NOTAM response and returns only NOTAMs with text containing the specified values.\n\nMultiple phrases can be searched for, by using a comma separated listed such as GPS,OBST. In this case, it returns only NOTAMs with text containing all the words.\n\nText Contains rules:\n- MUST have less than 21 characters\n- MUST only contain alphanumeric characters or commas\n- MUST be entered if 'Q-Code' is empty'\n",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_key",
+            "in": "query",
+            "description": "User Key Authentication Parameter",
+            "required": true,
+            "threescale_name": "user_keys",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "NOTAMs by Aerodrome Success Response",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "cache-control": {
+                "description": "Used to specify directives for caching mechanisms",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/successResponseNotam"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request sent was not understood by the system",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/badRequestFailureResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request sent could not be authenticated by the system",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authenticationFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tfrs": {
+      "get": {
+        "tags": [
+          "Temporary Flight Restrictions"
+        ],
+        "summary": "Temporary flight restrictions",
+        "operationId": "temporaryFlightRestrictions",
+        "description": "Retrieves a list of all active Temporary Flight Restrictions(TFRs) in a GeoJSON response format.\n",
+        "parameters": [
+          {
+            "name": "Accept",
+            "in": "header",
+            "description": "Sets the Accept header to request a specific content-type in the response",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "application/json"
+              ]
+            }
+          },
+          {
+            "name": "qcode",
+            "in": "query",
+            "description": "The Q-Code or selection code such as QOBCE to obtain obstacle related NOTAMs.\n\nAdding a Q-Code parameter will return only NOTAMS with the specified Q-Code.\n \nQ-Code rules:\n- MUST start with a 'Q'\n- MUST be five characters\n",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "text_contains",
+            "in": "query",
+            "description": "Searches the 'text' field in the NOTAM response and returns only NOTAMs with text containing the specified values.\n\nMultiple phrases can be searched for, by using a comma separated listed such as GPS,OBST. In this case, it returns only NOTAMs with text containing all the words.\n \nText Contains rules:\n- MUST have less than 21 characters\n- MUST only contain alphanumeric characters or commas\n",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_key",
+            "in": "query",
+            "description": "User Key Authentication Parameter",
+            "required": true,
+            "threescale_name": "user_keys",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "TFRs Success Response",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "cache-control": {
+                "description": "Used to specify directives for caching mechanisms",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/successResponseNotam"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request sent was not understood by the system",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/badRequestFailureResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request sent could not be authenticated by the system",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authenticationFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notams": {
+      "get": {
+        "tags": [
+          "NOTAMs by Q-Code and Text"
+        ],
+        "summary": "NOTAMs by Q-Code and text",
+        "operationId": "notamsByQCodeAndText",
+        "description": "Retrieves all the NOTAMs that matches the given type, Q-Code or text phrase or both in a GeoJSON response format.\n\nAt least one query parameter needs to be defined for the API to return a valid\nresponse\n",
+        "parameters": [
+          {
+            "name": "Accept",
+            "in": "header",
+            "description": "Sets the Accept header to request a specific content-type in the response",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "application/json"
+              ]
+            }
+          },
+          {
+            "name": "qcode",
+            "in": "query",
+            "description": "The Q-Code or selection code such as QOBCE to obtain obstacle related NOTAMs.\n\nAdding a Q-Code parameter will return only NOTAMS with the specified Q-Code.\n \nQ-Code rules:\n- MUST start with a 'Q'\n- MUST be five characters\n",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "text_contains",
+            "in": "query",
+            "description": "Searches the 'text' field in the NOTAM response and returns only NOTAMs with text containing the specified values.\n\nMultiple phrases can be searched for, by using a comma separated listed such as GPS,OBST. In this case, it returns only NOTAMs with text containing all the words.\n \nText Contains rules:\n- MUST have less than 21 characters\n- MUST only contain alphanumeric characters or commas\n",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_key",
+            "in": "query",
+            "description": "User Key Authentication Parameter",
+            "required": true,
+            "threescale_name": "user_keys",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "NOTAMs Success Response",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "cache-control": {
+                "description": "Used to specify directives for caching mechanisms",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/successResponseNotam"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request sent was not understood by the system",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/badRequestFailureResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request sent could not be authenticated by the system",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authenticationFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "NOTAMs by User Defined Geometry"
+        ],
+        "summary": "NOTAMs by user defined geometry",
+        "operationId": "notamsByUserDefinedGeometry",
+        "description": "Returns all NOTAMs which have a geometry all or part of which falls (within 1 nautical mile) of the [axis aligned bounding box](https://en.wikipedia.org/wiki/Minimum_bounding_box) of the GeoJson geometry\n",
+        "parameters": [
+          {
+            "name": "Accept",
+            "in": "header",
+            "description": "Sets the Accept header to request a specific content-type in the response",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "application/json"
+              ]
+            }
+          },
+          {
+            "name": "user_key",
+            "in": "query",
+            "description": "User Key Authentication Parameter",
+            "required": true,
+            "threescale_name": "user_keys",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/geo+json": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "GeoJSON geometry marking area to show NOTAMs for",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "NOTAMs by User Defined Geometry Success Response",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "cache-control": {
+                "description": "Used to specify directives for caching mechanisms",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/successResponseNotam"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request sent was not understood by the system",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/badRequestFailureResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request sent could not be authenticated by the system",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authenticationFailureResponse"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Invalid MediaType",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/countries/{country.code.iso}/notams": {
+      "get": {
+        "tags": [
+          "NOTAMs by Country Code"
+        ],
+        "summary": "NOTAMs by country code",
+        "operationId": "notamsByCountryCode",
+        "description": "Retrieves a list of all NOTAMs for a given ISO 3166 country code in a GeoJSON response format.\n\nThe NOTAM ```countryCode``` property is derived from the ```location``` property if it is a valid ICAO designator, **not** from the NOTAM ```text``` or ```geometry``` properties.\n\nHere are some country code examples to use in therequest:\n- AUS\n- GBR\n- LUX\n\nAs mentioned in the response section, if your application does not have the agreed access to a particular country then you will recieve an unauthorized response when requesting NOTAM information for that country.\n",
+        "parameters": [
+          {
+            "name": "Accept",
+            "in": "header",
+            "description": "Sets the Accept header to request a specific content-type in the response",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "application/json"
+              ]
+            }
+          },
+          {
+            "name": "country.code.iso",
+            "in": "path",
+            "description": "The ISO 3166 code for a country code e.g. GBR.\n\nCountry Code ISO rules:\n- MUST be letters (case insensitive)\n- MUST be only three characters\n",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_key",
+            "in": "query",
+            "description": "User Key Authentication Parameter",
+            "required": true,
+            "threescale_name": "user_keys",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "NOTAMs by Country Code Success Response",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "cache-control": {
+                "description": "Used to specify directives for caching mechanisms",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/successResponseNotam"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request sent was not understood by the system",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/badRequestFailureResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request sent had unauthorized country codes for supplied user_key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Unauthorized Country Code Failure Response",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "title": "Unauthorized Error",
+                      "description": "Contains the unauthorized failure information",
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "description": "Response code",
+                          "type": "number",
+                          "example": 401
+                        },
+                        "message": {
+                          "description": "Response message",
+                          "type": "string",
+                          "example": "Authorization Required"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request sent could not be authenticated by the system",
+            "headers": {
+              "content-type": {
+                "description": "Indicates the response body format",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authenticationFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.laminardata.aero/v2"
+    }
+  ],
+  "components": {
+    "schemas": {
+      "successResponseNotam": {
+        "title": "NOTAMs",
+        "description": "NOTAMs are provided as a collection of GeoJSON feature collection objects (RFC 7946)",
+        "type": "object",
+        "required": [
+          "type",
+          "features",
+          "results"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "The Type Schema ",
+            "example": "FeatureCollection"
+          },
+          "features": {
+            "type": "array",
+            "title": "GeoJSON Features",
+            "items": {
+              "title": "GeoJSON Feature Properties",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "title": "The Features Id Schema",
+                  "example": "116128c3-2fbd-4edc-895f-85c21ceae545"
+                },
+                "type": {
+                  "type": "string",
+                  "title": "The Features Type Schema ",
+                  "enum": [
+                    "Feature"
+                  ]
+                },
+                "geometry": {
+                  "title": "The position of the NOTAM.",
+                  "description": "The API attempts to obtain a geometry for each NOTAM. Geometries are currently either taken from the center point and radius stated in the NOTAM Q-line, or inferred from the text content of the NOTAM.\n\nGeometries are published in GeoJSON form. Currently, the geometry member of each Feature will either be null where a geometry is not available, or a GeoJSON geometry object of type GeometryCollection where a geometry has been obtained. The type of geometries within the GeometryCollection will be Polygon. Clients should be compliant with the full GeoJSON specification, and be prepared to accept other types of GeoJSON geometry object on the geometry member or within a GeometryCollection in the future.\n\nEach geometry object within the collection represents a volume of space the NOTAM affects. Since there is no standard way to express a volume with upper and lower bounds in GeoJSON, the geometry objects are extended in order to encapsulate this additional information. The properties upperLimit and lowerLimit are added, which describe the maximum and minimum vertical limits respectively.",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "title": "The Type Schema ",
+                      "example": "GeometryCollection"
+                    },
+                    "geometries": {
+                      "type": "array",
+                      "items": {
+                        "title": "NOTAM Geometries",
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "title": "The Type Schema ",
+                            "example": "Polygon"
+                          },
+                          "lowerLimit": {
+                            "title": "NOTAM Geometry Lower Limit",
+                            "type": "object",
+                            "properties": {
+                              "uom": {
+                                "type": "string",
+                                "description": "An enumerated value that describes the measurement system. This field is optional for some types of reference. Possible values:\n- FEET - The value is measured in feet\n- METERS - - The value is measured in meters",
+                                "example": "FEET"
+                              },
+                              "value": {
+                                "type": "integer",
+                                "description": "The actual measure of the limit. Interpreting the value requires inspection of the reference and uom fields as described above. This field is optional for some types of reference.",
+                                "example": 5000
+                              },
+                              "reference": {
+                                "type": "string",
+                                "description": "An enumerated value that describes the type of limit. Possibel values:\n- FLIGHT_LEVEL - The value refers to a flight level. The type of flight level is described by the uom. If the uom is FEET this is an imperial flight level; if the uom is METERS, this indicates standard metric levels are in used, however this construct is not currently expressed by the API. Note that no conversion to MSL at standard pressure is applied, i.e. FL250 will be represented as a value of 250, not 25000.\n- AMSL - The value refers to a height above mean sea level (MSL) in the given uom\n- AGL - The value refers to a height above ground level in the given uom\n- SFC - The lower limit is at the surface. In this case no uom or value is given.\n- GND - The lower limit is at the ground. In this case no uom or value is given. For most practical purposes this is equivalent to SFC, however because the NOTAM specification allows originators to use GND or SFC the distinction has been retained in the API.\n\nNote that a reference may not always be provided if one was not explicitly specified in the input. In this case, you may generally assume the reference is AMSL for the purposes of interpreting the value and uom.",
+                                "example": "AGL"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "upperLimit": {
+                            "title": "NOTAM Geometry Upper Limit",
+                            "type": "object",
+                            "properties": {
+                              "uom": {
+                                "type": "string",
+                                "description": "An enumerated value that describes the measurement system. This field is optional for some types of reference. Possible values:\n- FEET - The value is measured in feet\n- METERS - - The value is measured in meters",
+                                "example": "FEET"
+                              },
+                              "value": {
+                                "type": "integer",
+                                "description": "The actual measure of the limit. Interpreting the value requires inspection of the reference and uom fields as described above. This field is optional for some types of reference.",
+                                "example": 15000
+                              },
+                              "reference": {
+                                "type": "string",
+                                "description": "An enumerated value that describes the type of limit. Possible values:\n- FLIGHT_LEVEL - The value refers to a flight level. The type of flight level is described by the uom. If the uom is FEET this is an imperial flight level; if the uom is METERS, this indicates standard metric levels are in used, however this construct is not currently expressed by the API. Note that no conversion to MSL at standard pressure is applied, i.e. FL250 will be represented as a value of 250, not 25000.\n- AMSL - The value refers to a height above mean sea level (MSL) in the given uom\n- AGL - The value refers to a height above ground level in the given uom\n- UNL - The upper limit is unlimited. In this case no uom or value is given.\n\nNote that a reference may not always be provided if one was not explicitly specified in the input. In this case, you may generally assume the reference is AMSL for the purposes of interpreting the value and uom.",
+                                "example": "AMSL"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "coordinates": {
+                            "title": "NOTAM Geometry Coordinates",
+                            "type": "array",
+                            "items": {
+                              "title": "NOTAM Geometry Coordinates (lon and lat)",
+                              "type": "array",
+                              "items": {
+                                "type": "number",
+                                "title": "NOTAM Geometry Coordinate",
+                                "example": [
+                                  122.38795471191406,
+                                  -38.26834487915039
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "properties": {
+                  "title": "NOTAM Properties",
+                  "type": "object",
+                  "properties": {
+                    "lat": {
+                      "type": "number",
+                      "description": "The latitude of the centre point of effect of the NOTAM",
+                      "example": 33.96670150756836
+                    },
+                    "lon": {
+                      "type": "number",
+                      "description": "The longitude of the centre point of effect of the NOTAM",
+                      "example": -117.63330078125
+                    },
+                    "series": {
+                      "type": "string",
+                      "description": "The series letter that identifies the NOTAM. Most US domestic NOTAMs are not issued with a series.",
+                      "example": "A"
+                    },
+                    "text": {
+                      "type": "string",
+                      "description": "The text content of the NOTAM",
+                      "example": "OBST TOWER LGT (ASN 2011-AWP-7801-OE) 335955N1173935W (1.9NM NW CNO) 878FT (190FT AGL) OUT OF SERVICE"
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Enumerated value of `N` for a new NOTAM, `R` for a NOTAM replacing another, `C` for a NOTAM cancelling another",
+                      "example": "N"
+                    },
+                    "year": {
+                      "type": "integer",
+                      "description": "The issue year that identifies the NOTAM",
+                      "example": 2018
+                    },
+                    "scope": {
+                      "type": "string",
+                      "description": "Enumerated value describing the broad aeronautical feature the NOTAM affects. Possible values:\n- A - Aerodrome\n- E - En-route\n- W - Nav warning\n- K - NOTAM is a checklist\n\nAny combination of these codes may appear.",
+                      "example": "E"
+                    },
+                    "issued": {
+                      "type": "string",
+                      "description": "The instant at which the NOTAM was issued",
+                      "example": "2018-04-15T17:14:00Z"
+                    },
+                    "number": {
+                      "type": "integer",
+                      "description": "The incrementing number that identifies the NOTAM",
+                      "example": 34
+                    },
+                    "radius": {
+                      "type": "integer",
+                      "description": "The Radius Schema ",
+                      "example": 34
+                    },
+                    "purpose": {
+                      "type": "string",
+                      "description": "Enumerated value classifying the distribution of the NOTAM. Possible values:\n- N - NOTAM selected for the immediate attention of aircraft operators\n- B - NOTAM selected for PIB entry\n- O - NOTAM concerning flight operations\n- M - Miscellaneous NOTAM; not subject for a briefing, but it is available on request\n- K - NOTAM is a checklist\n- BO - Combination of B and O\n- NBO - Combination of N, B and O\n- NB - Combination of N and B\n- NM - Combination of N and M",
+                      "example": "M"
+                    },
+                    "traffic": {
+                      "type": "string",
+                      "description": "Enumerated value stating the type of traffic affected by the NOTAM. Possible values:\n- I - Instrument Flight Rules (IFR) traffic.\n- V - Visual Flight Rules (VFR) traffic.\n- IV - Both IFR and VFR traffic.\n- K - NOTAM is a checklist.",
+                      "example": "IV"
+                    },
+                    "location": {
+                      "type": "string",
+                      "description": "Identification of the ICAO location indicator in which the facility, airspace or condition reported on is located. Note that for some domestic NOTAM types this may be a local-specific aerodrome code rather than an ICAO location indicator.",
+                      "example": "KCNO"
+                    },
+                    "maximumFL": {
+                      "type": "integer",
+                      "description": "The overall upper limit of all volumes the NOTAM affects expressed as a flight level. Note that for many NOTAMs this limit is omitted or left to a default of `999`, which is often higher than the actual upper limit.",
+                      "example": 999
+                    },
+                    "minimumFL": {
+                      "type": "integer",
+                      "description": "The overall lower limit of all volumes the NOTAM affects expressed as a flight level. Note that for many NOTAMs this limit is omitted or left to a default of `0`, which is often lower than the actual lower limit.",
+                      "example": 0
+                    },
+                    "affectedFIR": {
+                      "type": "string",
+                      "description": "The ICAO location indicator of affected FIR or, if applicable to more than one FIR within a State, the first two letters of the ICAO location indicator of a State plus \"XX\".",
+                      "example": "EGXX"
+                    },
+                    "effectiveEnd": {
+                      "type": "string",
+                      "description": "The instant at which the NOTAM ceases to be applicable",
+                      "example": "2018-04-30T17:14:00Z"
+                    },
+                    "effectiveEndInterpretation": {
+                      "type": "string",
+                      "description": "An indicator representing some uncertainty on the effective end date of the NOTAM. May be one of the following values:\n`EST` - the effective end of the NOTAM is estimated and may be later revised. \n`PERM` - the effective end of the NOTAM is not yet known. \nWhen one of these indicators is present, the NOTAM should be regarded as being in force until specifically cancelled.\n",
+                      "example": "PERM"
+                    },
+                    "countryCode": {
+                      "type": "string",
+                      "description": "The ISO 3166-1 alpha-3 country code where the NOTAM has occurred",
+                      "example": "GBR"
+                    },
+                    "publisherNOF": {
+                      "type": "string",
+                      "description": "An identifier of the authority that issued the NOTAM",
+                      "example": "CNO"
+                    },
+                    "translations": {
+                      "type": "array",
+                      "items": {
+                        "description": "Expressions of the NOTAM in different formats",
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "description": "The type of format in which the translation has been made",
+                            "example": "OTHER_ICAO"
+                          },
+                          "language": {
+                            "type": "string",
+                            "description": "The language of the translation",
+                            "example": "DUTCH"
+                          },
+                          "formattedText": {
+                            "type": "string",
+                            "description": "The translation content with HTML markup",
+                            "example": "<html:div xmlns=\"http://www.aixm.aero/schema/5.1/message\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:html=\"http://www.w3.org/1999/xhtml\">04/034 NOTAMN&lt;br/&gt;\n                                            &lt;b&gt;Q) &lt;/b&gt;ZLA/QOLAS/IV/M/E/000/878/3358N11738W005&lt;br/&gt;\n                                            &lt;b&gt;A) &lt;/b&gt;KCNO&lt;br/&gt;\n                                            &lt;b&gt;B) &lt;/b&gt;1804151714&lt;br/&gt;\n                                            &lt;b&gt;C) &lt;/b&gt;1804301714&lt;br/&gt;\n                                            &lt;b&gt;E) &lt;/b&gt;OBST TOWER 263.4 ( [190*0.3] AGL) 1.9 NW LGTS OUT OF SERVICE (ASN 2011-AWP-7801-OE)&lt;br/&gt;\n                                        </html:div>\n                                    "
+                          },
+                          "simpleText": {
+                            "type": "string",
+                            "description": "The translation content in plain text without any markup",
+                            "example": "!CNO 04/034 CNO OBST TOWER LGT (ASN 2011-AWP-7801-OE) 335955N1173935W (1.9NM NW CNO) 878FT (190FT AGL) OUT OF SERVICE 1804151714-1804301714"
+                          }
+                        }
+                      }
+                    },
+                    "schedule": {
+                      "type": "string",
+                      "description": "The Schedule Schema ",
+                      "example": "DAILY 1400 TO 1500"
+                    },
+                    "schedules": {
+                      "type": "array",
+                      "items": {
+                        "description": "NOTAM Schedules",
+                        "type": "object",
+                        "properties": {
+                          "frequency": {
+                            "type": "string",
+                            "description": "The Schedule Frequency Schema ",
+                            "example": "DAILY"
+                          },
+                          "startDate": {
+                            "type": "string",
+                            "description": "The Schedule start date Schema ",
+                            "example": "2018-10-10"
+                          },
+                          "startTime": {
+                            "type": "string",
+                            "description": "The Schedule start time Schema ",
+                            "example": "16:00:00"
+                          },
+                          "endDate": {
+                            "type": "string",
+                            "description": "The Schedule end date Schema ",
+                            "example": "2018-11-10"
+                          },
+                          "endTime": {
+                            "type": "string",
+                            "description": "The Schedule end time Schema ",
+                            "example": "19:30:00"
+                          }
+                        }
+                      }
+                    },
+                    "qcode": {
+                      "type": "string",
+                      "description": "The \"Q-Code\" summarising the content of the NOTAM. See ICAO document 8126 for more details",
+                      "example": "QGAAU"
+                    },
+                    "effectiveStart": {
+                      "type": "string",
+                      "description": "The instant at which the NOTAM is applicable",
+                      "example": "2018-04-15T17:14:00Z"
+                    },
+                    "affectedAerodrome": {
+                      "type": "string",
+                      "description": "The ICAO location that is identified as an aerodromes, empty otherwise",
+                      "example": "KCNO"
+                    },
+                    "relationship": {
+                      "description": "NOTAM Relationship",
+                      "type": "object",
+                      "properties": {
+                        "affectedFIR": {
+                          "description": "Links to the FIR object the NOTAM affects. Only applicable when apparent from the NOTAM and only one FIR is affected.",
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "description": "The four letter designator of the FIR",
+                              "example": "EGLL"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "reference": {
+                          "description": "Details of the NOTAM that has been cancelled or replaced by this NOTAM. Only applicable when apparent from a replacement or cancellation NOTAM.",
+                          "type": "object",
+                          "properties": {
+                            "series": {
+                              "type": "string",
+                              "description": "The series of the referred NOTAM.",
+                              "example": "A"
+                            },
+                            "number": {
+                              "type": "integer",
+                              "description": "The sequence number of the referred NOTAM.",
+                              "example": 34
+                            },
+                            "year": {
+                              "type": "integer",
+                              "description": "The year of the referred NOTAM.",
+                              "example": 2018
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "affectedEntities": {
+                      "type": "array",
+                      "items": {
+                        "description": "A entity affected by the NOTAM",
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "description": "The type of entity. This can be `AERODROME` or `RUNWAY`",
+                            "example": "AERODROME"
+                          },
+                          "closure": {
+                            "type": "string",
+                            "description": "Whether the affected entity is closed completely or with conditions. Values for this field are `TOTAL`, meaning that the entity is closed completely, and `PARTIAL`, which means that the closure is conditional.",
+                            "example": "TOTAL"
+                          },
+                          "designators": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "description": "The designators which identifies the entities",
+                              "example": [
+                                "2/20"
+                              ]
+                            }
+                          },
+                          "routeDesignator": {
+                            "type": "string",
+                            "title": "The designator which identifies the segment",
+                            "example": "T822"
+                          },
+                          "startPoint": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "title": "The type of the start Point",
+                                "example": "DESIGNATED_POINT"
+                              },
+                              "designator": {
+                                "type": "string",
+                                "title": "The name of the start Point",
+                                "example": "PETAP"
+                              },
+                              "name": {
+                                "type": "string",
+                                "title": "The name of the NAVAID",
+                                "example": "KRASNAYA GORBATKA"
+                              },
+                              "subType": {
+                                "type": "string",
+                                "title": "The sub type of the start Point",
+                                "example": "NDB"
+                              },
+                              "coordinates": {
+                                "title": "Coordinates of the start point",
+                                "type": "array",
+                                "items": {
+                                  "title": "NOTAM Geometry Coordinates (lon and lat)",
+                                  "type": "array",
+                                  "items": {
+                                    "type": "number",
+                                    "title": "NOTAM Geometry Coordinate",
+                                    "example": [
+                                      122.38795471191406,
+                                      -38.26834487915039
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "endPoint": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "title": "The type of the end Point",
+                                "example": "DESIGNATED_POINT"
+                              },
+                              "designator": {
+                                "type": "string",
+                                "title": "The name of the end Point",
+                                "example": "ALUGA"
+                              },
+                              "name": {
+                                "type": "string",
+                                "title": "The name of the NAVAID",
+                                "example": "KRASNAYA GORBATKA"
+                              },
+                              "subType": {
+                                "type": "string",
+                                "title": "The sub type of the end Point",
+                                "example": "NDB"
+                              },
+                              "coordinates": {
+                                "title": "Coordinates of the end point",
+                                "type": "array",
+                                "items": {
+                                  "title": "NOTAM Geometry Coordinates (lon and lat)",
+                                  "type": "array",
+                                  "items": {
+                                    "type": "number",
+                                    "title": "NOTAM Geometry Coordinate",
+                                    "example": [
+                                      122.38795471191406,
+                                      -38.26834487915039
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "lowerLevel": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "type": "integer",
+                                "title": "The value of the lower level",
+                                "example": 65
+                              },
+                              "reference": {
+                                "type": "string",
+                                "title": "The reference of the lower level",
+                                "example": "FLIGHT_LEVEL"
+                              },
+                              "uom": {
+                                "type": "string",
+                                "title": "The unit of measure of the lower level",
+                                "example": [
+                                  "METERS",
+                                  "FEET"
+                                ]
+                              }
+                            }
+                          },
+                          "upperLevel": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "type": "integer",
+                                "title": "The value of the upper level",
+                                "example": 200
+                              },
+                              "reference": {
+                                "type": "string",
+                                "title": "The reference of the upper level",
+                                "example": "FLIGHT_LEVEL"
+                              },
+                              "uom": {
+                                "type": "string",
+                                "title": "The unit of measure of the upper level",
+                                "example": [
+                                  "METERS",
+                                  "FEET"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "metadata": {
+                      "type": "object",
+                      "description": "NOTAM Property Metadata",
+                      "properties": {
+                        "geometrySources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "description": "Geometry Data Source",
+                            "example": [
+                              "text",
+                              "text_and_eaip",
+                              "point_and_radius",
+                              "text_and_ai",
+                              "faa_dnotam_aixm"
+                            ]
+                          }
+                        },
+                        "lastUpdateTimestamp": {
+                          "type": "string",
+                          "description": "Time of last update to data recieved by snowflake",
+                          "example": "2018-04-30T17:14:00Z"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "required": [
+                        "lastUpdateTimestamp"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "results": {
+            "$ref": "#/components/schemas/results"
+          }
+        }
+      },
+      "authenticationFailureResponse": {
+        "title": "Authentication Failure Response",
+        "type": "object",
+        "description": "The response model for authentication failures",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "title": "Authentication Error",
+            "description": "Contains the authentication failure information",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "description": "Response code",
+                "type": "number",
+                "example": 403
+              },
+              "message": {
+                "description": "Response message",
+                "type": "string",
+                "example": "Authentication Failed - Please check your request and credentials"
+              }
+            }
+          }
+        }
+      },
+      "badRequestFailureResponse": {
+        "title": "Bad Request Failure Response",
+        "type": "object",
+        "description": "The response model for bad request failures",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "title": "Bad Request Error",
+            "description": "Contains the bad request failure information",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "description": "Response code",
+                "type": "number",
+                "example": 400
+              },
+              "message": {
+                "description": "Response message",
+                "type": "string",
+                "example": "Bad Request - Please specify access_token query parameter with your API credentials"
+              }
+            }
+          }
+        }
+      },
+      "results": {
+        "title": "Results",
+        "description": "The result information of the GeoJSON feature",
+        "type": "object",
+        "required": [
+          "publishTime",
+          "status",
+          "total"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "publishTime": {
+            "description": "The date/time that the results were published by the system",
+            "type": "string",
+            "example": "2019-07-31T10:27:37.350Z"
+          },
+          "status": {
+            "description": "The status of the response",
+            "type": "string",
+            "example": "ok"
+          },
+          "total": {
+            "description": "The total number of results returned",
+            "type": "number",
+            "example": "100"
+          }
+        }
+      }
+    }
+  }
+}
