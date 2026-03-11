@@ -1,0 +1,19 @@
+[Unit]
+Description=MarketSignal NOTAM Collector
+Documentation=https://github.com/eraeyyc/marketsignal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=marketsignal
+WorkingDirectory=/home/marketsignal/marketsignal
+EnvironmentFile=/home/marketsignal/marketsignal/.env
+ExecStart=/usr/bin/python3 notam_collector.py --loop
+Restart=always
+RestartSec=30
+StandardOutput=append:/var/log/marketsignal/notam.log
+StandardError=append:/var/log/marketsignal/notam.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=MarketSignal Streamlit Dashboard
+Documentation=https://github.com/eraeyyc/marketsignal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=marketsignal
+WorkingDirectory=/home/marketsignal/marketsignal
+EnvironmentFile=/home/marketsignal/marketsignal/.env
+ExecStart=/usr/bin/python3 -m streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0 --server.headless true
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/marketsignal/dashboard.log
+StandardError=append:/var/log/marketsignal/dashboard.log
+
+[Install]
+WantedBy=multi-user.target
