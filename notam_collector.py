@@ -14,15 +14,19 @@ Usage:
 import sqlite3
 import requests
 import json
+import os
 import time
 import argparse
 from datetime import datetime, timezone
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 DB_PATH       = "notam_events.db"
 API_BASE      = "https://api.sky.cirium.com"
-API_TOKEN     = "d82fa384a0a171450d98bc95849865e2"
+API_TOKEN     = os.environ.get("CIRIUM_API_TOKEN", "")
 POLL_INTERVAL = 1800  # 30 minutes in seconds
 
 # Middle East bounding box: lat 10–45, lon 25–65

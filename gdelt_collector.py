@@ -12,13 +12,19 @@ Usage:
 
 import sqlite3
 import argparse
+import os
 from datetime import datetime
 from google.cloud import bigquery
 import pandas as pd
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-CREDENTIALS_FILE = "gdelt_credentials.json"
+# Path to BigQuery service account JSON — set GOOGLE_APPLICATION_CREDENTIALS in .env
+# or fall back to local gdelt_credentials.json
+CREDENTIALS_FILE = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "gdelt_credentials.json")
 DB_PATH = "gdelt_events.db"
 START_DATE = 20230101
 

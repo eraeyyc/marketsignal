@@ -15,9 +15,13 @@ Usage:
 import sqlite3
 import requests
 import json
+import os
 import time
 import argparse
 from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -31,19 +35,18 @@ POLL_INTERVAL        = 600   # 10 minutes in seconds
 ANOMALY_DROP         = 0.40  # flag if count drops >40% below baseline
 TOKEN_REFRESH_MARGIN = 30    # seconds before expiry to proactively refresh
 
-# OpenSky OAuth2 credentials — loaded from credentials.json
-# Format: {"clientId": "...", "clientSecret": "..."}
-CREDENTIALS_FILE = "credentials.json"
-
+# OpenSky OAuth2 credentials — from .env (falls back to credentials.json)
 def _load_credentials():
+    client_id     = os.environ.get("OPENSKY_CLIENT_ID", "")
+    client_secret = os.environ.get("OPENSKY_CLIENT_SECRET", "")
+    if client_id and client_secret:
+        return client_id, client_secret
+    # Legacy fallback: credentials.json
     try:
-        with open(CREDENTIALS_FILE) as f:
+        with open("credentials.json") as f:
             c = json.load(f)
         return c.get("clientId", ""), c.get("clientSecret", "")
     except FileNotFoundError:
-        return "", ""
-    except Exception as e:
-        print(f"Warning: could not load {CREDENTIALS_FILE}: {e}")
         return "", ""
 
 CLIENT_ID, CLIENT_SECRET = _load_credentials()
