@@ -83,6 +83,24 @@ de-escalation scores every 10 minutes.
 - Check signals: `python3 convergence_engine.py --signals`
 - Outputs to: `convergence_engine.db`
 
+### Stage 2e: Route Suspension Collector — DONE ✓ (pending first run)
+Monitors scheduled vs. actual operated flights for 13 watched airlines across all
+ME airport pairs. A sustained route suspension is a leading indicator — airlines pull
+service quietly before governments announce closures.
+- `route_collector.py` — polls Cirium Flex API daily
+- Compares scheduled vs. operated flights over 7-day rolling window
+- Flags when operated flights drop >60% below schedule for 3+ consecutive days
+- Stores in `route_events.db` with `first_detected_at` + `last_confirmed_at`
+- Feeds into convergence engine as `route_suspension` signals (λ=0.12/day, Event type)
+- Auth: Cirium Flex API — `appId` + `appKey` query params
+- Base URL: `https://api.flightstats.com/flex`
+- Run: `python3 route_collector.py --refresh` (schedule cache), then `--loop`
+- **Back-test flag:** `flightstatus/historical/rest/v2/json/route/{dep}/{arr}` endpoint
+  gives historical ME route data — use in GDELT calibration pass to validate
+  route suspension lead times against known escalation events.
+- Airport pairs monitored (both directions): TLV, AMM, BGW, KWI, BAH, DOH, DXB,
+  AUH, MCT, IKA, THR, BEY, CAI, IST
+
 ### Schema: last_confirmed_at + resolved_at — DONE ✓
 All signal tables now have `last_confirmed_at` (updated each poll while active) and
 `resolved_at` (set when condition clears). Migration is safe for existing DBs.
@@ -191,6 +209,7 @@ adsb_collector.py               OpenSky polling + Mode A/B detection
 notam_collector.py              Cirium Sky API NOTAM collection
 notam_check.py                  NOTAM API sanity check script
 convergence_engine.py           Stage 3 scoring daemon
+route_collector.py              Cirium Flex API route suspension collector
 load_aircraft_db.py             One-time migration: CSV → SQLite aircraft_lookup table
 VIP Aircraft.csv                Government/diplomatic aircraft watchlist (19 ICAO24s)
 .env.example                    Environment variable template
@@ -211,5 +230,6 @@ gdelt_events.db                 2.5M GDELT events (768MB)
 adsb_events.db                  ADS-B + strategic tracking database
 notam_events.db                 NOTAM database
 convergence_engine.db           Convergence scores output database
+route_events.db                 Route suspension database
 aircraft-database-complete.csv  616K-row source CSV (only needed for load_aircraft_db.py)
 ```

@@ -39,6 +39,7 @@ from datetime import datetime, timezone, timedelta
 ADSB_DB       = "adsb_events.db"
 NOTAM_DB      = "notam_events.db"
 GDELT_DB      = "gdelt_events.db"
+ROUTE_DB      = "route_events.db"
 ENGINE_DB     = "convergence_engine.db"
 
 POLL_INTERVAL = 600          # 10 minutes
@@ -388,6 +389,49 @@ def read_notam_anomalies(notam_conn):
     return signals
 
 
+def read_route_suspensions(route_conn):
+    """Route suspension signals — Events, escalation track (λ=0.12/day)."""
+    try:
+        rows = route_conn.execute("""
+            SELECT dep, arr, airline_name, consecutive_days, drop_pct, severity,
+                   first_detected_at, last_confirmed_at, resolved_at
+            FROM route_suspensions
+            WHERE first_detected_at > ?
+            ORDER BY first_detected_at DESC
+        """, (_cutoff(),)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    seen = {}
+    signals = []
+    for dep, arr, airline_name, days, drop_pct, severity, first, lca, resolved_at in rows:
+        key = (dep, arr, airline_name)
+        if key in seen:
+            continue
+        seen[key] = True
+        sev_key = (severity or "MEDIUM").lower()
+        s0      = S0.get(f"traffic_drop_{sev_key}", S0["traffic_drop_medium"])
+        score   = event_score(s0, "route_suspension", lca or first)
+        if score < 0.01:
+            continue
+        signals.append({
+            "type": "route_suspension",
+            "signal_class": "event",
+            "category": "route_suspension",
+            "track": "escalation",
+            "region": f"{dep}-{arr}",
+            "region_label": f"{dep}-{arr}",
+            "s0": s0,
+            "score": score,
+            "first_detected_at": first,
+            "last_confirmed_at": lca or first,
+            "resolved_at": resolved_at,
+            "severity": severity,
+            "detail": f"{airline_name} | {days}d | {drop_pct*100:.0f}% drop",
+        })
+    return signals
+
+
 def read_gdelt_signals(gdelt_conn):
     """
     GDELT ground truth — recent high-magnitude events.
@@ -591,9 +635,10 @@ def save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, diver
 
 def compute(verbose=True):
     # Open all source DBs (read-only where possible)
-    adsb_conn   = sqlite3.connect(f"file:{ADSB_DB}?mode=ro", uri=True)  if os.path.exists(ADSB_DB)  else None
-    notam_conn  = sqlite3.connect(f"file:{NOTAM_DB}?mode=ro", uri=True) if os.path.exists(NOTAM_DB) else None
-    gdelt_conn  = sqlite3.connect(f"file:{GDELT_DB}?mode=ro", uri=True) if os.path.exists(GDELT_DB) else None
+    adsb_conn   = sqlite3.connect(f"file:{ADSB_DB}?mode=ro",   uri=True) if os.path.exists(ADSB_DB)   else None
+    notam_conn  = sqlite3.connect(f"file:{NOTAM_DB}?mode=ro",  uri=True) if os.path.exists(NOTAM_DB)  else None
+    gdelt_conn  = sqlite3.connect(f"file:{GDELT_DB}?mode=ro",  uri=True) if os.path.exists(GDELT_DB)  else None
+    route_conn  = sqlite3.connect(f"file:{ROUTE_DB}?mode=ro",  uri=True) if os.path.exists(ROUTE_DB)  else None
     engine_conn = init_engine_db()
 
     signals = []
@@ -609,6 +654,10 @@ def compute(verbose=True):
     if notam_conn:
         signals += read_notam_anomalies(notam_conn)
         notam_conn.close()
+
+    if route_conn:
+        signals += read_route_suspensions(route_conn)
+        route_conn.close()
 
     if gdelt_conn:
         signals += read_gdelt_signals(gdelt_conn)
