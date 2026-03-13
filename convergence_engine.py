@@ -71,14 +71,16 @@ S0 = {
     "traffic_drop_low":      3.0,
     "traffic_drop_medium":   6.0,
     "traffic_drop_high":    12.0,
-    "vip_sighting":          5.0,
+    "vip_sighting":          5.0,   # diplomatic / strategic_lift VIP (Event)
     "going_dark":           15.0,
     "strategic_lift_medium": 8.0,
     "strategic_lift_high":  16.0,
     "tanker_medium":         7.0,
     "tanker_high":          14.0,
-    "isr_medium":           10.0,
+    "isr_medium":           10.0,   # ISR/BACN aircraft (State)
     "isr_high":             20.0,
+    "command_medium":       12.0,   # E-4B / C-32B Gatekeeper (State)
+    "command_high":         22.0,
     "bizjet_medium":         6.0,
     "bizjet_high":          12.0,
     "bizjet_cluster":       10.0,
@@ -192,42 +194,98 @@ def read_traffic_anomalies(adsb_conn):
 
 
 def read_vip_sightings(adsb_conn):
-    """VIP sightings — treated as Events."""
+    """
+    VIP sightings — logic depends on aircraft category:
+
+    State (sigmoid growth while active, decay after dark):
+      isr     — E-11A BACN, RC-12: persistent airborne infrastructure
+      command — E-4B Doomsday, C-32B Gatekeeper: elevated readiness posture
+
+    Event (exponential decay from last sighting):
+      diplomatic     — VIP state visits, royal transports
+      strategic_lift — individual IL-76/C-17 sightings (type clustering handles the surge)
+      everything else
+    """
+    STATE_CATEGORIES    = {"isr", "command"}
+    ACTIVE_THRESHOLD_M  = 30   # minutes without a sighting → treat as resolved
+
     rows = adsb_conn.execute("""
         SELECT icao24, tail_number, operator, category, signal_value,
-               region, region_label, detected_at
+               region, region_label,
+               MIN(detected_at) AS first_seen,
+               MAX(detected_at) AS last_seen
         FROM vip_sightings
         WHERE detected_at > ?
-        ORDER BY detected_at DESC
+        GROUP BY icao24, region
     """, (_cutoff(),)).fetchall()
 
-    # One signal per icao24+region combo (most recent)
+    now = datetime.now(timezone.utc)
     seen = {}
     signals = []
-    for icao, tail, operator, category, sig_val, region, label, detected_at in rows:
+
+    for icao, tail, operator, category, sig_val, region, label, first_seen, last_seen in rows:
         key = (icao, region)
         if key in seen:
             continue
         seen[key] = True
-        s0    = S0["vip_sighting"]
-        score = event_score(s0, "bizjet", detected_at)
-        if score < 0.01:
-            continue
-        track = "deescalation" if category == "diplomatic" else "escalation"
-        signals.append({
-            "type": "vip_sighting",
-            "signal_class": "event",
-            "category": "bizjet",
-            "track": track,
-            "region": region,
-            "region_label": label or region,
-            "s0": s0,
-            "score": score,
-            "first_detected_at": detected_at,
-            "last_confirmed_at": detected_at,
-            "resolved_at": None,
-            "detail": f"{tail} ({operator})",
-        })
+
+        if category in STATE_CATEGORIES:
+            # ── State logic ────────────────────────────────────────────────
+            try:
+                last_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                last_dt = now
+
+            minutes_dark = (now - last_dt).total_seconds() / 60
+            resolved_at  = last_seen if minutes_dark > ACTIVE_THRESHOLD_M else None
+
+            sig   = (sig_val or "medium").lower()
+            cat   = category  # "isr" or "command"
+            s0    = S0.get(f"{cat}_{sig}", S0.get(f"{cat}_medium", S0["isr_medium"]))
+            score = state_score(s0, first_seen, resolved_at)
+            if score < 0.01:
+                continue
+
+            status = "active" if not resolved_at else f"dark {minutes_dark:.0f}m"
+            signals.append({
+                "type":             "vip_sighting",
+                "signal_class":     "state",
+                "category":         "isr_command",
+                "track":            "escalation",
+                "region":           region,
+                "region_label":     label or region,
+                "s0":               s0,
+                "score":            score,
+                "first_detected_at":first_seen,
+                "last_confirmed_at":last_seen,
+                "resolved_at":      resolved_at,
+                "detail":           f"{tail} ({operator}) [{status}]",
+            })
+
+        else:
+            # ── Event logic (diplomatic / strategic_lift / unknown) ────────
+            s0    = S0["vip_sighting"]
+            score = event_score(s0, "bizjet", last_seen)
+            if score < 0.01:
+                continue
+            track = "deescalation" if category == "diplomatic" else "escalation"
+            signals.append({
+                "type":             "vip_sighting",
+                "signal_class":     "event",
+                "category":         "bizjet",
+                "track":            track,
+                "region":           region,
+                "region_label":     label or region,
+                "s0":               s0,
+                "score":            score,
+                "first_detected_at":first_seen,
+                "last_confirmed_at":last_seen,
+                "resolved_at":      None,
+                "detail":           f"{tail} ({operator})",
+            })
+
     return signals
 
 
