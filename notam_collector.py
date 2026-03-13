@@ -32,11 +32,14 @@ POLL_INTERVAL = 1800  # 30 minutes in seconds
 API_TOKEN = os.environ.get("CIRIUM_SKY_APP_ID", "")
 
 # Middle East bounding box: lat 10–45, lon 25–65
-# API expects a bare GeoJSON geometry (Polygon), Content-Type: application/geo+json
+# API expects a GeoJSON Feature wrapping a Polygon geometry.
 # Coordinates are [longitude, latitude] order.
 ME_GEOMETRY = {
-    "type": "Polygon",
-    "coordinates": [[[25, 10], [65, 10], [65, 45], [25, 45], [25, 10]]],
+    "type": "Feature",
+    "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[25, 10], [65, 10], [65, 45], [25, 45], [25, 10]]],
+    },
 }
 
 # Q-code prefixes that trigger anomaly flagging (airspace restriction/closure)
@@ -150,8 +153,9 @@ def fetch_notams():
             url,
             data=json.dumps(ME_GEOMETRY),
             headers={
-                "Content-Type": "application/geo+json",
-                "Authorization": API_TOKEN,
+                "Content-Type":  "application/geo+json",
+                "Accept":        "application/geo+json",
+                "Authorization": f"Bearer {API_TOKEN}",
             },
             timeout=30,
         )
