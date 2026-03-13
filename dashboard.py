@@ -1,337 +1,493 @@
 #!/usr/bin/env python3
 """
-MarketSignal — GDELT Explorer
+MarketSignal — Signal Overview Dashboard
 Run with: streamlit run dashboard.py
 """
 
 import streamlit as st
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import pandas as pd
-from google.cloud import bigquery
-from datetime import date
+import sqlite3
+from datetime import datetime, timezone, timedelta
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="MarketSignal — GDELT Explorer",
+    page_title="MarketSignal — Overview",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
-# ── Constants ──────────────────────────────────────────────────────────────────
-CREDENTIALS_FILE = "gdelt_credentials.json"
+ADSB_DB   = "adsb_events.db"
+NOTAM_DB  = "notam_events.db"
+GDELT_DB  = "gdelt_events.db"
 
-CAMEO_LABELS = {
-    "03": "Intent to cooperate",
-    "04": "Consult",
-    "05": "Diplomatic cooperation",
-    "06": "Material cooperation",
-    "08": "Yield / de-escalate",
-    "09": "Investigate",
-    "10": "Demand",
-    "11": "Disapprove",
-    "12": "Reject",
-    "13": "Threaten",
-    "14": "Protest",
-    "15": "Exhibit force posture",
-    "16": "Reduce relations",
-    "17": "Coerce",
-    "18": "Assault",
-    "19": "Fight",
-    "20": "Unconventional mass violence",
-}
-
-COUNTRIES = {
-    "ISR": "Israel",
-    "PSE": "Palestine / Gaza",
-    "IRN": "Iran",
-    "LBN": "Lebanon",
-    "SYR": "Syria",
-    "YEM": "Yemen",
-    "SAU": "Saudi Arabia",
-    "JOR": "Jordan",
-    "EGY": "Egypt",
-    "QAT": "Qatar",
-    "ARE": "UAE",
-    "TUR": "Turkey",
-    "USA": "United States",
-    "RUS": "Russia",
-    "CHN": "China",
-}
-
-ALL_ACTORS     = list(COUNTRIES.keys())
 CONFLICT_CODES = ("15", "16", "17", "18", "19", "20")
 COOP_CODES     = ("03", "04", "05", "06", "08")
-EXCLUDED_CODES = ("01", "02", "07")  # statements, appeals, humanitarian aid
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _db(path):
+    return sqlite3.connect(path, check_same_thread=False)
+
+def _db_exists(path):
+    try:
+        conn = sqlite3.connect(path)
+        conn.execute("SELECT 1")
+        conn.close()
+        return True
+    except Exception:
+        return False
 
 
-# ── BigQuery ───────────────────────────────────────────────────────────────────
-@st.cache_resource
-def get_client():
-    return bigquery.Client.from_service_account_json(CREDENTIALS_FILE)
+# ── ADS-B data ─────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=120, show_spinner=False)
+def adsb_current_counts():
+    """Latest snapshot count per region."""
+    try:
+        with _db(ADSB_DB) as conn:
+            rows = conn.execute("""
+                SELECT s.region_label, s.aircraft_count
+                FROM snapshots s
+                INNER JOIN (
+                    SELECT region, MAX(polled_unix) AS mx FROM snapshots GROUP BY region
+                ) latest ON s.region = latest.region AND s.polled_unix = latest.mx
+                ORDER BY s.aircraft_count DESC
+            """).fetchall()
+        return rows
+    except Exception:
+        return []
+
+@st.cache_data(ttl=120, show_spinner=False)
+def adsb_latest_ts():
+    try:
+        with _db(ADSB_DB) as conn:
+            ts = conn.execute("SELECT MAX(polled_at) FROM snapshots").fetchone()[0]
+        return ts[:16] if ts else None
+    except Exception:
+        return None
+
+@st.cache_data(ttl=120, show_spinner=False)
+def adsb_anomalies_recent(days=7):
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M")
+        with _db(ADSB_DB) as conn:
+            df = pd.read_sql_query("""
+                SELECT detected_at, region_label AS location,
+                       'Traffic drop ' || ROUND(drop_pct*100,0) || '%' AS detail,
+                       severity, 'ADS-B' AS layer
+                FROM anomalies
+                WHERE detected_at >= ?
+                ORDER BY detected_at DESC
+                LIMIT 30
+            """, conn, params=(cutoff,))
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=120, show_spinner=False)
+def adsb_type_anomalies_recent(days=7):
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M")
+        with _db(ADSB_DB) as conn:
+            df = pd.read_sql_query("""
+                SELECT detected_at,
+                       region || ' — ' || type_category AS location,
+                       'σ=' || ROUND(sigma,1) || ' (' || observed_count || ' aircraft)' AS detail,
+                       severity, 'Strategic' AS layer
+                FROM type_anomalies
+                WHERE detected_at >= ?
+                ORDER BY detected_at DESC
+                LIMIT 20
+            """, conn, params=(cutoff,))
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=120, show_spinner=False)
+def vip_sightings_recent(hours=24):
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
+        with _db(ADSB_DB) as conn:
+            df = pd.read_sql_query("""
+                SELECT seen_at AS detected_at,
+                       tail_number || ' (' || country || ')' AS location,
+                       region || ' @ ' || COALESCE(nearest_airport,'?') AS detail,
+                       'INFO' AS severity, 'VIP' AS layer
+                FROM vip_sightings
+                WHERE seen_at >= ?
+                ORDER BY seen_at DESC
+                LIMIT 20
+            """, conn, params=(cutoff,))
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=120, show_spinner=False)
+def vip_dark_events_recent(days=7):
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M")
+        with _db(ADSB_DB) as conn:
+            df = pd.read_sql_query("""
+                SELECT dark_since AS detected_at,
+                       tail_number || ' (' || country || ')' AS location,
+                       'Last seen: ' || last_region AS detail,
+                       'HIGH' AS severity, 'VIP Dark' AS layer
+                FROM vip_dark_events
+                WHERE dark_since >= ?
+                ORDER BY dark_since DESC
+                LIMIT 10
+            """, conn, params=(cutoff,))
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
-def build_where(start_int, end_int, countries, codes, min_articles):
-    actor_list = "', '".join(ALL_ACTORS)
-    clause = f"""
-        WHERE SQLDATE BETWEEN {start_int} AND {end_int}
-          AND NumArticles >= {min_articles}
-          AND EventRootCode NOT IN {EXCLUDED_CODES}
-          AND (
-              Actor1CountryCode IN ('{actor_list}')
-              OR Actor2CountryCode IN ('{actor_list}')
-          )
-    """
-    if countries:
-        c = "', '".join(countries)
-        clause += f"  AND (Actor1CountryCode IN ('{c}') OR Actor2CountryCode IN ('{c}'))\n"
-    if codes:
-        c = "', '".join(codes)
-        clause += f"  AND EventRootCode IN ('{c}')\n"
-    return clause
+# ── NOTAM data ─────────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=120, show_spinner=False)
+def notam_active_count():
+    try:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+        with _db(NOTAM_DB) as conn:
+            n = conn.execute("""
+                SELECT COUNT(*) FROM notams
+                WHERE (effective_end IS NULL OR effective_end > ? OR effective_end_interp = 'PERM')
+                AND qcode LIKE 'QR%'
+            """, (now,)).fetchone()[0]
+        return n
+    except Exception:
+        return None
+
+@st.cache_data(ttl=120, show_spinner=False)
+def notam_anomalies_recent(days=7):
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M")
+        with _db(NOTAM_DB) as conn:
+            df = pd.read_sql_query("""
+                SELECT detected_at,
+                       location || ' (' || country_code || ')' AS location,
+                       restriction_type || ' — ' || SUBSTR(raw_text,1,60) AS detail,
+                       severity, 'NOTAM' AS layer
+                FROM notam_anomalies
+                WHERE detected_at >= ?
+                ORDER BY detected_at DESC
+                LIMIT 30
+            """, conn, params=(cutoff,))
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=120, show_spinner=False)
+def notam_active_by_country():
+    try:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+        with _db(NOTAM_DB) as conn:
+            df = pd.read_sql_query("""
+                SELECT country_code, COUNT(*) AS active_restrictions
+                FROM notams
+                WHERE (effective_end IS NULL OR effective_end > ? OR effective_end_interp = 'PERM')
+                AND qcode LIKE 'QR%'
+                GROUP BY country_code
+                ORDER BY active_restrictions DESC
+                LIMIT 15
+            """, conn, params=(now,))
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+# ── GDELT local data ───────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_daily(_client, start_int, end_int, countries, codes, min_articles):
-    where = build_where(start_int, end_int, countries, codes, min_articles)
-    q = f"""
-        SELECT
-            CAST(SQLDATE AS STRING)                                                          AS event_date,
-            COUNT(*)                                                                         AS total,
-            ROUND(AVG(GoldsteinScale), 2)                                                   AS goldstein,
-            SUM(CASE WHEN EventRootCode IN {CONFLICT_CODES} THEN 1 ELSE 0 END)              AS conflict,
-            SUM(CASE WHEN EventRootCode IN {COOP_CODES}     THEN 1 ELSE 0 END)              AS coop
-        FROM `gdelt-bq.gdeltv2.events`
-        {where}
-        GROUP BY event_date
-        ORDER BY event_date
-    """
-    return _client.query(q).to_dataframe()
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_breakdown(_client, start_int, end_int, countries, codes, min_articles):
-    where = build_where(start_int, end_int, countries, codes, min_articles)
-    q = f"""
-        SELECT EventRootCode AS code, COUNT(*) AS n
-        FROM `gdelt-bq.gdeltv2.events`
-        {where}
-        GROUP BY code
-        ORDER BY n DESC
-    """
-    df = _client.query(q).to_dataframe()
-    df["label"] = df["code"].map(CAMEO_LABELS).fillna("Unknown")
-    return df
-
+def gdelt_goldstein_trend(days=30):
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y%m%d")
+        with _db(GDELT_DB) as conn:
+            df = pd.read_sql_query("""
+                SELECT SQLDATE AS event_date,
+                       ROUND(AVG(GoldsteinScale),2) AS goldstein,
+                       COUNT(*) AS total
+                FROM events
+                WHERE SQLDATE >= ?
+                GROUP BY event_date
+                ORDER BY event_date
+            """, conn, params=(cutoff,))
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_top_events(_client, start_int, end_int, countries, codes, min_articles):
-    where = build_where(start_int, end_int, countries, codes, min_articles)
-    q = f"""
-        SELECT
-            CAST(SQLDATE AS STRING)  AS date,
-            Actor1CountryCode        AS actor1,
-            Actor2CountryCode        AS actor2,
-            EventRootCode            AS code,
-            ROUND(GoldsteinScale, 1) AS goldstein,
-            NumArticles              AS articles,
-            ActionGeo_FullName       AS location,
-            SOURCEURL                AS url
-        FROM `gdelt-bq.gdeltv2.events`
-        {where}
-        ORDER BY NumArticles DESC
-        LIMIT 200
-    """
-    df = _client.query(q).to_dataframe()
-    df["event_type"] = df["code"].map(CAMEO_LABELS).fillna(df["code"])
-    return df
+def gdelt_summary_stats(days=30):
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y%m%d")
+        with _db(GDELT_DB) as conn:
+            row = conn.execute("""
+                SELECT ROUND(AVG(GoldsteinScale),2),
+                       SUM(CASE WHEN EventRootCode IN ('15','16','17','18','19','20') THEN 1 ELSE 0 END),
+                       COUNT(*)
+                FROM events WHERE SQLDATE >= ?
+            """, (cutoff,)).fetchone()
+        if row and row[2]:
+            return {"goldstein": row[0], "conflict_pct": round(row[1]/row[2]*100,1), "total": row[2]}
+        return None
+    except Exception:
+        return None
 
 
 # ── Charts ─────────────────────────────────────────────────────────────────────
-def bar_color(g):
-    if g < -1:
-        return "rgba(239, 68, 68, 0.75)"   # red — conflict
-    if g > 0.5:
-        return "rgba(34, 197, 94, 0.75)"   # green — cooperation
-    return "rgba(148, 163, 184, 0.6)"      # grey — neutral
 
-
-def chart_timeline(df):
-    colors = df["goldstein"].apply(bar_color).tolist()
-
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-
-    fig.add_trace(
-        go.Bar(
-            x=df["event_date"], y=df["total"],
-            name="Events / day",
-            marker_color=colors,
-            hovertemplate="%{x}<br>Events: %{y:,}<extra></extra>",
-        ),
-        secondary_y=False,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["event_date"], y=df["goldstein"],
-            name="Goldstein",
-            line=dict(color="white", width=2),
-            hovertemplate="%{x}<br>Goldstein: %{y:.2f}<extra></extra>",
-        ),
-        secondary_y=True,
-    )
-    fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.25)", secondary_y=True)
-
+def chart_adsb_bar(rows):
+    labels = [r[0].split(" /")[0] for r in rows]
+    counts = [r[1] for r in rows]
+    CONFLICT_REGIONS = {"Israel", "Lebanon", "Iran", "Yemen"}
+    colors = [
+        "rgba(239,68,68,0.75)"   if l in CONFLICT_REGIONS else
+        "rgba(99,102,241,0.75)"  if l in {"Persian Gulf", "Turkey", "Saudi Arabia"} else
+        "rgba(148,163,184,0.65)"
+        for l in labels
+    ]
+    fig = go.Figure(go.Bar(
+        x=labels, y=counts,
+        marker_color=colors,
+        hovertemplate="%{x}: %{y}<extra></extra>",
+    ))
     fig.update_layout(
-        template="plotly_dark",
-        height=360,
-        margin=dict(l=0, r=0, t=10, b=0),
-        legend=dict(orientation="h", y=1.08),
-        hovermode="x unified",
-        bargap=0.1,
+        template="plotly_dark", height=260,
+        margin=dict(l=0, r=0, t=6, b=0),
+        yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+        xaxis=dict(tickangle=-20),
     )
-    fig.update_yaxes(title_text="Events / day", secondary_y=False, gridcolor="rgba(255,255,255,0.05)")
-    fig.update_yaxes(title_text="Goldstein scale", secondary_y=True, range=[-10, 10], gridcolor="rgba(0,0,0,0)")
-
     return fig
 
 
-def chart_breakdown(df):
-    colors = [
-        "rgba(239, 68, 68, 0.8)"  if c in CONFLICT_CODES else
-        "rgba(34, 197, 94, 0.8)"  if c in COOP_CODES     else
-        "rgba(148, 163, 184, 0.7)"
-        for c in df["code"]
-    ]
-    fig = go.Figure(go.Bar(
-        x=df["n"],
-        y=df["label"],
-        orientation="h",
+def chart_gdelt_sparkline(df):
+    if df.empty:
+        return None
+    colors = []
+    for g in df["goldstein"]:
+        if g < -1:
+            colors.append("rgba(239,68,68,0.7)")
+        elif g > 0.5:
+            colors.append("rgba(34,197,94,0.7)")
+        else:
+            colors.append("rgba(148,163,184,0.6)")
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df["event_date"].astype(str), y=df["total"],
         marker_color=colors,
-        hovertemplate="%{y}: %{x:,}<extra></extra>",
+        hovertemplate="%{x}<br>Events: %{y:,}<extra></extra>",
+        name="Events",
+    ))
+    fig.add_trace(go.Scatter(
+        x=df["event_date"].astype(str), y=df["goldstein"],
+        line=dict(color="white", width=1.5),
+        yaxis="y2", name="Goldstein",
+        hovertemplate="Goldstein: %{y:.2f}<extra></extra>",
+    ))
+    fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.2)", secondary_y=False)
+    fig.update_layout(
+        template="plotly_dark", height=200,
+        margin=dict(l=0, r=0, t=6, b=0),
+        legend=dict(orientation="h", y=1.12, font=dict(size=11)),
+        hovermode="x unified",
+        yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="Events/day"),
+        yaxis2=dict(overlaying="y", side="right", range=[-10,10], title="Goldstein"),
+    )
+    return fig
+
+
+def chart_notam_countries(df):
+    fig = go.Figure(go.Bar(
+        x=df["active_restrictions"],
+        y=df["country_code"],
+        orientation="h",
+        marker_color="rgba(251,146,60,0.75)",
+        hovertemplate="%{y}: %{x} restrictions<extra></extra>",
     ))
     fig.update_layout(
-        template="plotly_dark",
-        height=360,
-        margin=dict(l=0, r=0, t=10, b=0),
+        template="plotly_dark", height=260,
+        margin=dict(l=0, r=0, t=6, b=0),
         yaxis=dict(categoryorder="total ascending"),
         xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
     )
     return fig
 
 
-# ── Sidebar ────────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## MarketSignal")
-    st.caption("GDELT Middle East Explorer")
-    st.divider()
+# ── Unified anomaly feed ────────────────────────────────────────────────────────
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        start_date = st.date_input("From", value=date(2023, 10, 1), min_value=date(2023, 1, 1))
-    with col_b:
-        end_date = st.date_input("To", value=date.today())
-
-    selected_countries = st.multiselect(
-        "Countries (actor filter)",
-        options=ALL_ACTORS,
-        format_func=lambda c: f"{c} — {COUNTRIES[c]}",
-        placeholder="All countries",
-    )
-
-    selected_codes = st.multiselect(
-        "Event types",
-        options=list(CAMEO_LABELS.keys()),
-        format_func=lambda c: f"{c} — {CAMEO_LABELS[c]}",
-        placeholder="All types",
-    )
-
-    min_articles = st.slider("Min. article coverage", min_value=1, max_value=50, value=10)
-
-    run_btn = st.button("Run Query", type="primary", use_container_width=True)
-
-    st.divider()
-    st.caption("Source: GDELT v2 via BigQuery\nResults cached 1 hour per filter set.")
+def build_unified_feed():
+    frames = []
+    for fn in [adsb_anomalies_recent, adsb_type_anomalies_recent,
+               notam_anomalies_recent, vip_dark_events_recent]:
+        df = fn()
+        if not df.empty:
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+    combined = pd.concat(frames, ignore_index=True)
+    combined = combined.sort_values("detected_at", ascending=False).head(40)
+    return combined
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
-st.markdown("## GDELT Middle East Explorer")
+SEVERITY_COLORS = {
+    "HIGH":   "#ef4444",
+    "MEDIUM": "#f97316",
+    "LOW":    "#eab308",
+    "INFO":   "#94a3b8",
+}
 
-if run_btn:
-    if end_date <= start_date:
-        st.error("End date must be after start date.")
-        st.stop()
+LAYER_COLORS = {
+    "ADS-B":    "#6366f1",
+    "Strategic":"#a855f7",
+    "NOTAM":    "#f97316",
+    "VIP":      "#06b6d4",
+    "VIP Dark": "#ef4444",
+}
 
-    client    = get_client()
-    start_int = int(start_date.strftime("%Y%m%d"))
-    end_int   = int(end_date.strftime("%Y%m%d"))
-    params    = (start_int, end_int, tuple(selected_countries), tuple(selected_codes), min_articles)
 
-    with st.spinner("Querying BigQuery — usually 15–30 seconds..."):
-        st.session_state["daily_df"]     = fetch_daily(client, *params)
-        st.session_state["breakdown_df"] = fetch_breakdown(client, *params)
-        st.session_state["events_df"]    = fetch_top_events(client, *params)
-        st.session_state["query_label"]  = (
-            f"{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}"
-            + (f"  |  {', '.join(selected_countries)}" if selected_countries else "")
-            + (f"  |  codes {', '.join(selected_codes)}" if selected_codes else "")
-        )
+# ── Page ───────────────────────────────────────────────────────────────────────
 
-if "daily_df" not in st.session_state:
-    st.info("Set your filters in the sidebar and click **Run Query**.")
-    st.stop()
+st.markdown("## MarketSignal — Signal Overview")
 
-daily_df     = st.session_state["daily_df"]
-breakdown_df = st.session_state["breakdown_df"]
-events_df    = st.session_state["events_df"]
+adsb_ts = adsb_latest_ts()
+now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+st.caption(f"Page loaded: {now_str}  |  Last ADS-B poll: {adsb_ts or '—'} UTC")
 
-if daily_df.empty:
-    st.warning("No events found for this filter combination. Try widening the date range or removing filters.")
-    st.stop()
-
-# ── Metrics ────────────────────────────────────────────────────────────────────
-st.caption(st.session_state.get("query_label", ""))
-
-total        = int(daily_df["total"].sum())
-avg_g        = round(float(daily_df["goldstein"].mean()), 2)
-conflict_pct = round(daily_df["conflict"].sum() / total * 100, 1) if total else 0
-coop_pct     = round(daily_df["coop"].sum()     / total * 100, 1) if total else 0
-
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Total events",   f"{total:,}")
-m2.metric("Avg Goldstein",  avg_g)
-m3.metric("Conflict %",     f"{conflict_pct}%")
-m4.metric("Cooperation %",  f"{coop_pct}%")
+if st.button("Refresh", use_container_width=False):
+    st.cache_data.clear()
+    st.rerun()
 
 st.divider()
 
-# ── Charts ─────────────────────────────────────────────────────────────────────
-left, right = st.columns([2, 1])
+# ── Metrics row ────────────────────────────────────────────────────────────────
+rows_adsb     = adsb_current_counts()
+total_me_ac   = sum(r[1] for r in rows_adsb) if rows_adsb else None
+active_notams = notam_active_count()
+gdelt_stats   = gdelt_summary_stats(30)
+
+cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M")
+cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M")
+
+try:
+    with _db(ADSB_DB) as conn:
+        adsb_anomaly_count  = conn.execute("SELECT COUNT(*) FROM anomalies WHERE detected_at >= ?", (cutoff_7d,)).fetchone()[0]
+        type_anomaly_count  = conn.execute("SELECT COUNT(*) FROM type_anomalies WHERE detected_at >= ?", (cutoff_7d,)).fetchone()[0]
+        vip_sighting_count  = conn.execute("SELECT COUNT(*) FROM vip_sightings WHERE seen_at >= ?", (cutoff_24h,)).fetchone()[0]
+except Exception:
+    adsb_anomaly_count = type_anomaly_count = vip_sighting_count = None
+
+try:
+    with _db(NOTAM_DB) as conn:
+        notam_anomaly_count = conn.execute("SELECT COUNT(*) FROM notam_anomalies WHERE detected_at >= ?", (cutoff_7d,)).fetchone()[0]
+except Exception:
+    notam_anomaly_count = None
+
+m1, m2, m3, m4, m5, m6 = st.columns(6)
+m1.metric("ME Aircraft", total_me_ac if total_me_ac is not None else "—",
+          help="Total aircraft visible across all ME regions in latest snapshot")
+m2.metric("Active NOTAM Restrictions", active_notams if active_notams is not None else "—",
+          help="NOTAMs with QR* codes currently in effect")
+m3.metric("ADS-B Anomalies (7d)", adsb_anomaly_count if adsb_anomaly_count is not None else "—",
+          help="Traffic drops >40% below baseline in last 7 days")
+m4.metric("NOTAM Alerts (7d)", notam_anomaly_count if notam_anomaly_count is not None else "—",
+          help="New airspace restriction NOTAMs in last 7 days")
+m5.metric("VIP Sightings (24h)", vip_sighting_count if vip_sighting_count is not None else "—",
+          help="Watched tail numbers spotted in last 24 hours")
+m6.metric("GDELT Goldstein (30d)",
+          f"{gdelt_stats['goldstein']:+.2f}" if gdelt_stats else "—",
+          help="Average Goldstein scale last 30 days. Negative = conflict-skewed.")
+
+st.divider()
+
+# ── Main content: anomaly feed + GDELT ────────────────────────────────────────
+left, right = st.columns([3, 2])
+
 with left:
-    st.subheader("Event volume + Goldstein trend")
-    st.caption("Bar colour: red = conflict-skewed day, green = cooperation-skewed, grey = neutral")
-    st.plotly_chart(chart_timeline(daily_df), use_container_width=True)
+    st.subheader("Unified Anomaly Feed")
+    st.caption("All signal layers · last 7 days · sorted newest first")
+
+    feed_df = build_unified_feed()
+    if feed_df.empty:
+        st.info("No anomalies detected yet. Collectors need a few days to build baselines.")
+    else:
+        for _, row in feed_df.iterrows():
+            sev   = row.get("severity", "INFO")
+            layer = row.get("layer", "")
+            sev_color   = SEVERITY_COLORS.get(sev, "#94a3b8")
+            layer_color = LAYER_COLORS.get(layer, "#94a3b8")
+
+            ts_raw = str(row["detected_at"])[:16]
+            loc    = str(row.get("location",""))
+            detail = str(row.get("detail",""))[:80]
+
+            st.markdown(
+                f'<div style="border-left:3px solid {sev_color};padding:6px 10px;'
+                f'margin-bottom:6px;background:rgba(255,255,255,0.03);border-radius:3px">'
+                f'<span style="color:{layer_color};font-size:11px;font-weight:600">{layer}</span>'
+                f'&nbsp;&nbsp;<span style="color:#94a3b8;font-size:11px">{ts_raw}</span>'
+                f'&nbsp;&nbsp;<span style="color:{sev_color};font-size:11px">{sev}</span><br>'
+                f'<span style="font-size:13px">{loc}</span><br>'
+                f'<span style="color:#94a3b8;font-size:12px">{detail}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
 with right:
-    st.subheader("Event type breakdown")
-    st.plotly_chart(chart_breakdown(breakdown_df), use_container_width=True)
+    st.subheader("GDELT Goldstein Trend (30d)")
+    st.caption("Local DB · event volume + Goldstein scale · red=conflict, green=coop")
+
+    gdelt_df = gdelt_goldstein_trend(30)
+    if gdelt_df.empty:
+        st.info("GDELT data not available locally. Use GDELT Explorer to load.")
+    else:
+        fig_g = chart_gdelt_sparkline(gdelt_df)
+        if fig_g:
+            st.plotly_chart(fig_g, use_container_width=True)
+
+        if gdelt_stats:
+            g1, g2 = st.columns(2)
+            g1.metric("Avg Goldstein", f"{gdelt_stats['goldstein']:+.2f}")
+            g2.metric("Conflict %", f"{gdelt_stats['conflict_pct']}%")
 
 st.divider()
 
-# ── Events table ───────────────────────────────────────────────────────────────
-st.subheader(f"Top events by media coverage")
-st.caption("Top 200 events for selected period, ranked by number of articles. Click source to open.")
+# ── ADS-B counts + NOTAM by country ───────────────────────────────────────────
+col_l, col_r = st.columns(2)
 
-st.dataframe(
-    events_df[["date", "actor1", "actor2", "event_type", "goldstein", "articles", "location", "url"]],
-    column_config={
-        "date":       st.column_config.TextColumn("Date"),
-        "actor1":     st.column_config.TextColumn("Actor 1"),
-        "actor2":     st.column_config.TextColumn("Actor 2"),
-        "event_type": st.column_config.TextColumn("Event type"),
-        "goldstein":  st.column_config.NumberColumn("Goldstein", format="%.1f"),
-        "articles":   st.column_config.NumberColumn("Articles"),
-        "location":   st.column_config.TextColumn("Location"),
-        "url":        st.column_config.LinkColumn("Source", display_text="open"),
-    },
-    use_container_width=True,
-    hide_index=True,
-)
+with col_l:
+    st.subheader("ADS-B — Current by Region")
+    if rows_adsb:
+        st.plotly_chart(chart_adsb_bar(rows_adsb), use_container_width=True)
+        st.caption(f"Last poll: {adsb_ts or '—'} UTC")
+    else:
+        st.info("No ADS-B data. Run `python3 adsb_collector.py --loop`")
+
+with col_r:
+    st.subheader("Active NOTAM Restrictions by Country")
+    notam_country_df = notam_active_by_country()
+    if notam_country_df.empty:
+        st.info("No active NOTAM data. Run `python3 notam_collector.py --loop`")
+    else:
+        st.plotly_chart(chart_notam_countries(notam_country_df), use_container_width=True)
+        st.caption("Only restriction Q-codes (QR*) shown")
+
+st.divider()
+
+# ── VIP sightings strip ────────────────────────────────────────────────────────
+st.subheader("VIP Aircraft — Last 24h")
+vip_df = vip_sightings_recent(24)
+if vip_df.empty:
+    st.info("No VIP sightings in last 24 hours.")
+else:
+    display_cols = ["detected_at", "location", "detail"]
+    st.dataframe(
+        vip_df[display_cols].rename(columns={"detected_at": "Seen at", "location": "Aircraft", "detail": "Region / Airport"}),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+st.divider()
+st.caption("Navigate to detailed pages using the sidebar →  "
+           "ADS-B Monitor · NOTAM Monitor · Strategic Monitor · GDELT Explorer")

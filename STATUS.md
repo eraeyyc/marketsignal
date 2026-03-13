@@ -1,5 +1,5 @@
 # MarketSignal — Project Status
-Last updated: 2026-03-11
+Last updated: 2026-03-13
 
 ---
 
@@ -61,7 +61,11 @@ Airspace restriction filings — leading indicator, hours before kinetic events.
 
 ### Dashboard — DONE ✓
 Run with: `streamlit run dashboard.py`
-- Page 1: GDELT Explorer — BigQuery charts, event table, Goldstein scale trend
+- **Home (`dashboard.py`)**: Signal Overview — unified anomaly feed from all layers,
+  top metrics (ME aircraft, active NOTAMs, anomaly counts, VIP sightings, GDELT Goldstein),
+  ADS-B counts bar chart, NOTAM restrictions by country, GDELT 30-day trend sparkline.
+  All data loaded from local SQLite only — no BigQuery on page load.
+- Page 1: GDELT Explorer — BigQuery charts, event table, Goldstein scale trend (deep-dive)
 - Page 2: ADS-B Monitor — live counts, trend chart, airline presence, anomaly log
 - Page 3: NOTAM Monitor — active restrictions map, NOTAM feed, anomaly log
 - Page 4: Strategic Monitor — VIP sightings, going-dark, type clusters, bizjet clusters
@@ -163,9 +167,9 @@ streamlit run dashboard.py
 
 ## Files in This Repo
 ```
-dashboard.py                    Streamlit app entry point
+dashboard.py                    Signal overview — unified anomaly feed + all-layer metrics
 pages/
-  1_GDELT_Explorer.py           GDELT BigQuery dashboard
+  1_GDELT_Explorer.py           GDELT BigQuery deep-dive explorer
   2_ADS-B_Monitor.py            ADS-B traffic monitoring dashboard
   3_NOTAM_Monitor.py            NOTAM airspace restriction dashboard
   4_Strategic_Monitor.py        VIP + strategic type clustering dashboard
