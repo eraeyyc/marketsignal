@@ -25,11 +25,11 @@ load_dotenv()
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 DB_PATH       = "notam_events.db"
-API_BASE      = "https://api.sky.cirium.com/v2"
+API_BASE      = "https://api.sky.cirium.com/v1"
 POLL_INTERVAL = 1800  # 30 minutes in seconds
 
-# Cirium Sky API — user_key passed as query param (per openapi.json spec)
-API_TOKEN = os.environ.get("CIRIUM_SKY_APP_ID", "")
+# Cirium Sky API — Static Token Auth: Secret goes in Authorization header (no prefix)
+API_TOKEN = os.environ.get("CIRIUM_SKY_APP_KEY", "")
 
 # Middle East bounding box: lat 10–45, lon 25–65
 # API expects a GeoJSON Feature wrapping a Polygon geometry.
@@ -151,11 +151,11 @@ def fetch_notams():
     try:
         r = requests.post(
             url,
-            params={"user_key": API_TOKEN},
             data=json.dumps(ME_GEOMETRY),
             headers={
-                "Content-Type": "application/geo+json",
-                "Accept":       "application/json",
+                "Content-Type":  "application/geo+json",
+                "Accept":        "application/json",
+                "Authorization": API_TOKEN,
             },
             timeout=30,
         )
