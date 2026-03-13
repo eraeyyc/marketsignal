@@ -108,7 +108,6 @@ REGIONS = [
 ]
 
 VIP_CSV          = "VIP Aircraft.csv"
-AIRCRAFT_DB_CSV  = "aircraft-database-complete.csv"
 GOING_DARK_HOURS = 24   # flag VIP aircraft as "going dark" after this many hours unseen
 
 # ── Mode B: strategic aircraft type categories ──────────────────────────────────
@@ -210,36 +209,16 @@ def _load_vip_watchlist():
     return result
 
 
-def _load_typecode_db():
-    """Load aircraft-database-complete.csv → dict icao24 → typecode.
-    Only loads strategic types to keep memory small."""
-    import csv
-    import sys
-    csv.field_size_limit(min(sys.maxsize, 10_000_000))
-    result = {}
-    try:
-        with open(AIRCRAFT_DB_CSV, newline="") as f:
-            reader = csv.DictReader(f)
-            # Field names may be single-quoted (e.g. "'icao24'") — build a normalised key map
-            raw_fields = reader.fieldnames or []
-            norm       = {k.strip("'"): k for k in raw_fields}
-            tc_key     = norm.get("typecode",  "typecode")
-            icao_key   = norm.get("icao24",    "icao24")
-            for row in reader:
-                tc = (row.get(tc_key) or "").strip().strip("'").upper()
-                if tc in ALL_STRATEGIC:
-                    icao = (row.get(icao_key) or "").strip().strip("'").lower()
-                    if icao:
-                        result[icao] = tc
-        print(f"  [TypeDB] Loaded {len(result)} strategic aircraft from type database")
-    except FileNotFoundError:
-        print(f"  [TypeDB] {AIRCRAFT_DB_CSV} not found — Mode B type lookup disabled")
-    return result
+def lookup_typecode(conn, icao24):
+    """Return typecode for an ICAO24 hex from the aircraft_lookup SQLite table, or None."""
+    row = conn.execute(
+        "SELECT typecode FROM aircraft_lookup WHERE icao24 = ?", (icao24,)
+    ).fetchone()
+    return row[0] if row else None
 
 
 # Load at module level — used throughout
-VIP_WATCH   = _load_vip_watchlist()
-TYPECODE_DB = _load_typecode_db()
+VIP_WATCH = _load_vip_watchlist()
 
 # Airline callsign prefixes to watch — these are major carriers
 # that signal airspace safety confidence by their presence/absence
@@ -381,9 +360,20 @@ def init_db(db_path):
         )
     """)
 
+    # ── Aircraft type lookup (populated by load_aircraft_db.py) ────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS aircraft_lookup (
+            icao24        TEXT PRIMARY KEY,
+            typecode      TEXT,
+            registration  TEXT,
+            operator      TEXT
+        )
+    """)
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vip_icao     ON vip_sightings(icao24)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vip_time     ON vip_sightings(detected_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_twc_region   ON type_watch_counts(region, polled_unix)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_al_icao      ON aircraft_lookup(icao24)")
     conn.commit()
     return conn
 
@@ -695,7 +685,7 @@ def process_type_watch(conn, region_id, region_label, aircraft):
 
     for a in aircraft:
         icao = (a["icao24"] or "").lower()
-        tc   = TYPECODE_DB.get(icao)
+        tc   = lookup_typecode(conn, icao)
         if not tc:
             continue
         cat = TYPECODE_CATEGORY.get(tc)
@@ -767,7 +757,7 @@ def check_bizjet_clusters(conn, all_region_aircraft):
         if not a["on_ground"]:
             continue
         icao = (a["icao24"] or "").lower()
-        tc   = TYPECODE_DB.get(icao)
+        tc   = lookup_typecode(conn, icao)
         if tc and TYPECODE_CATEGORY.get(tc) == "bizjet":
             ap = nearest_airport(a["lat"], a["lon"])
             if ap:
@@ -827,29 +817,28 @@ def poll_all(conn, verbose=True):
         time.sleep(2)
 
     # ── Mode B: type-watch regions ──────────────────────────────────────────────
-    if TYPECODE_DB:
-        if verbose:
-            print(f"\n  [Mode B] Type-watch regions:")
-        all_type_aircraft = []
-        for region_id, label, lamin, lomin, lamax, lomax in TYPE_WATCH_REGIONS:
-            states = fetch_region(region_id, label, lamin, lomin, lamax, lomax)
-            if states is None:
-                time.sleep(2)
-                continue
-            aircraft, on_ground, airborne = parse_states(states)
-            all_type_aircraft.extend(aircraft)
-            cat_counts = process_type_watch(conn, region_id, label, aircraft)
-            if verbose:
-                strategic_total = sum(cat_counts.values())
-                print(f"  {label:<30} total={len(states):>3}  strategic={strategic_total:>2}  "
-                      f"lift={cat_counts['strategic_lift']}  "
-                      f"tanker={cat_counts['tanker']}  "
-                      f"isr={cat_counts['isr_command']}  "
-                      f"bizjet={cat_counts['bizjet']}")
+    if verbose:
+        print(f"\n  [Mode B] Type-watch regions:")
+    all_type_aircraft = []
+    for region_id, label, lamin, lomin, lamax, lomax in TYPE_WATCH_REGIONS:
+        states = fetch_region(region_id, label, lamin, lomin, lamax, lomax)
+        if states is None:
             time.sleep(2)
+            continue
+        aircraft, on_ground, airborne = parse_states(states)
+        all_type_aircraft.extend(aircraft)
+        cat_counts = process_type_watch(conn, region_id, label, aircraft)
+        if verbose:
+            strategic_total = sum(cat_counts.values())
+            print(f"  {label:<30} total={len(states):>3}  strategic={strategic_total:>2}  "
+                  f"lift={cat_counts['strategic_lift']}  "
+                  f"tanker={cat_counts['tanker']}  "
+                  f"isr={cat_counts['isr_command']}  "
+                  f"bizjet={cat_counts['bizjet']}")
+        time.sleep(2)
 
-        # Bizjet clustering across all type-watch aircraft this cycle
-        check_bizjet_clusters(conn, all_type_aircraft)
+    # Bizjet clustering across all type-watch aircraft this cycle
+    check_bizjet_clusters(conn, all_type_aircraft)
 
     # Mode A: going-dark check (once per poll cycle, after all regions)
     if VIP_WATCH:
