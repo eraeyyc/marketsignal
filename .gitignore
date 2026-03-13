@@ -6,6 +6,14 @@ gdelt_credentials.json
 secrets.json
 .env
 
+# ── SSH keys ───────────────────────────────────────────────────────────────────
+ssh/
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+*.pub
+
 # ── Databases — too large for git ─────────────────────────────────────────────
 *.db
 *.sqlite
