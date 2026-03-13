@@ -26,3 +26,25 @@ LZ-001,,Bulgaria,Bulgarian Government,F900,diplomatic,low,Government transport �
 UR-65718,,Ukraine,Ukrainian Government,T154,diplomatic,medium,Tu-154 state transport — ICAO24 not found
 5U-BAG,,Niger,Government of Niger,unknown,diplomatic,low,Government aircraft — ICAO24 not found
 4D-MNE,,Austria,Private/VIP,unknown,diplomatic,low,Private VIP jet — needs ICAO24
+82-8000,,USA,USAF,VC25A,command,high,Air Force One — presidential VC-25A Boeing 747 — highest signal value
+92-9000,,USA,USAF,VC25A,command,high,Air Force One — presidential VC-25A Boeing 747 — highest signal value
+98-0002,,USA,USAF,C32A,diplomatic,high,C-32A Air Force Two — VP and SecState transport
+99-0003,,USA,USAF,C32A,diplomatic,high,C-32A Air Force Two — VP and SecState transport
+99-0004,,USA,USAF,C32A,diplomatic,high,C-32A Air Force Two — VP and SecState transport
+00-9001,,USA,USAF,C32B,command,high,C-32B Gatekeeper — clandestine/special ops — often dark — needs ICAO24
+1941,,USA,USAF,C37B,diplomatic,medium,C-37B VIP transport — referenced in USAF guidance — needs ICAO24
+1949,,USA,USAF,C37B,diplomatic,medium,C-37B VIP transport — referenced in USAF guidance — needs ICAO24
+01-0040,adf28d,USA,USAF,C40B,diplomatic,medium,C-40B VIP transport — referenced in USAF historical material
+11-9358,ae4a81,USA,USAF,E11A,isr,high,E-11A BACN — airborne comms relay — highly active ME theater
+21-9045,ae6b00,USA,USAF,E11A,isr,medium,E-11A BACN — airborne comms relay
+22-9046,ae7d45,USA,USAF,E11A,isr,medium,E-11A BACN — airborne comms relay
+A7-HBJ,06a0b2,Qatar,Qatar Amiri Flight,B748,diplomatic,high,Boeing 747-8 BBJ — second Qatar VVIP transport
+A7-HHJ,06a024,Qatar,Qatar Amiri Flight,A343,diplomatic,medium,A340 Qatar Amiri Flight
+A6-PFA,896472,UAE,UAE Presidential Flight,B748,diplomatic,high,Boeing 747-8 BBJ Presidential Flight
+A6-PFC,896500,UAE,UAE Presidential Flight,B788,diplomatic,high,Boeing 787-8 Presidential Flight
+A6-ALN,89602e,UAE,Dubai Royal Air Wing,B744,diplomatic,medium,Boeing 747-400 Dubai Royal Air Wing
+A9C-HAK,,Bahrain,Bahrain Royal Flight,unknown,diplomatic,high,Bahrain royal flight — needs ICAO24
+A9C-HMK,,Bahrain,Bahrain Royal Flight,unknown,diplomatic,high,Bahrain royal flight — needs ICAO24
+A4O-HMS,,Oman,Oman Royal Flight,B748,diplomatic,high,Boeing 747-8 BBJ Oman Royal Flight — needs ICAO24
+A4O-OMN,,Oman,Oman Royal Flight,B744,diplomatic,medium,Boeing 747-430 Oman Royal Flight — needs ICAO24
+SU-GGG,,Egypt,Egyptian Government,A343,diplomatic,medium,Government A340 — presidential transport — needs ICAO24
