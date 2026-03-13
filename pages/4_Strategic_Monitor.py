@@ -12,6 +12,8 @@ import sqlite3
 import json
 from datetime import datetime, timedelta, timezone
 
+VIP_CSV = "VIP Aircraft.csv"
+
 st.set_page_config(
     page_title="MarketSignal — Strategic Monitor",
     layout="wide",
@@ -46,6 +48,14 @@ CATEGORY_COLORS = {
 
 def _conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_vip_csv():
+    try:
+        return pd.read_csv(VIP_CSV)
+    except Exception:
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -254,11 +264,15 @@ st.caption(
     "Aircraft without ICAO24 codes cannot be tracked via ADS-B."
 )
 
+vip_csv_df   = load_vip_csv()
+total_watched = len(vip_csv_df) if not vip_csv_df.empty else "?"
+trackable     = int((vip_csv_df["icao24"].notna() & (vip_csv_df["icao24"].astype(str).str.strip() != "")).sum()) if not vip_csv_df.empty else "?"
+
 vip_df = load_vip_sightings(hours)
 if vip_df.empty:
     st.info(
         f"No VIP aircraft sightings in the last {hours}h. "
-        "Either none of the 7 watched aircraft are in monitored airspace, "
+        f"Either none of the {trackable} trackable aircraft are in monitored airspace, "
         "or they're flying with ADS-B off."
     )
 else:
@@ -285,7 +299,7 @@ else:
 
 # VIP last-seen status
 st.markdown("**Current watchlist status**")
-st.caption("All 7 aircraft with known ICAO24s — last seen timestamp and location.")
+st.caption(f"{trackable} of {total_watched} aircraft have confirmed ICAO24s and can be tracked via ADS-B. Last seen timestamp and location.")
 vip_ls = load_vip_last_seen()
 if vip_ls.empty:
     st.info("No VIP aircraft have been seen yet since monitoring started.")
@@ -307,6 +321,35 @@ else:
         hide_index=True,
         use_container_width=True,
     )
+
+# VIP watchlist expander
+with st.expander(f"Full VIP watchlist ({total_watched} aircraft)"):
+    if vip_csv_df.empty:
+        st.info("Could not load VIP Aircraft.csv")
+    else:
+        display_df = vip_csv_df.copy()
+        display_df["trackable"] = display_df["icao24"].notna() & (display_df["icao24"].astype(str).str.strip() != "")
+        st.dataframe(
+            display_df,
+            column_config={
+                "tail_number":   st.column_config.TextColumn("Tail"),
+                "icao24":        st.column_config.TextColumn("ICAO24"),
+                "country":       st.column_config.TextColumn("Country"),
+                "operator":      st.column_config.TextColumn("Operator"),
+                "aircraft_type": st.column_config.TextColumn("Type"),
+                "category":      st.column_config.TextColumn("Category"),
+                "signal_value":  st.column_config.TextColumn("Signal"),
+                "trackable":     st.column_config.CheckboxColumn("ADS-B trackable"),
+                "notes":         st.column_config.TextColumn("Notes"),
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.caption(
+            f"{trackable} aircraft have confirmed ICAO24s and are actively monitored. "
+            "The rest appear in the list but cannot be matched against ADS-B state vectors until an ICAO24 is found "
+            "(check ADS-B Exchange or Flightradar24 historical data)."
+        )
 
 # Going dark events
 if not dark_7d.empty:
