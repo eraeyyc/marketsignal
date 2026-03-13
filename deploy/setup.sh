@@ -34,7 +34,8 @@ chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 # ── Python dependencies ────────────────────────────────────────────────────────
 echo "[4/6] Installing Python dependencies..."
-pip3 install -q -r "$APP_DIR/requirements.txt"
+python3 -m venv "$APP_DIR/venv"
+"$APP_DIR/venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
 
 # ── Log directory ──────────────────────────────────────────────────────────────
 echo "[5/6] Creating log directory..."
