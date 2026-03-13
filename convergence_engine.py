@@ -348,13 +348,16 @@ def read_bizjet_clusters(adsb_conn):
 
 def read_notam_anomalies(notam_conn):
     """Active airspace restrictions — States."""
-    rows = notam_conn.execute("""
-        SELECT notam_id, location, severity, detected_at,
-               last_confirmed_at, resolved_at
-        FROM notam_anomalies
-        WHERE detected_at > ?
-        ORDER BY detected_at DESC
-    """, (_cutoff(),)).fetchall()
+    try:
+        rows = notam_conn.execute("""
+            SELECT notam_id, location, severity, detected_at,
+                   last_confirmed_at, resolved_at
+            FROM notam_anomalies
+            WHERE detected_at > ?
+            ORDER BY detected_at DESC
+        """, (_cutoff(),)).fetchall()
+    except sqlite3.OperationalError:
+        return []  # table not yet created (NOTAM collector not yet activated)
 
     seen = {}
     signals = []
