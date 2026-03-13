@@ -17,7 +17,6 @@ import json
 import os
 import time
 import argparse
-import base64
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
@@ -29,11 +28,8 @@ DB_PATH       = "notam_events.db"
 API_BASE      = "https://api.sky.cirium.com"
 POLL_INTERVAL = 1800  # 30 minutes in seconds
 
-# Cirium Sky API uses HTTP Basic Auth: Identifier + Secret
-_APP_ID  = os.environ.get("CIRIUM_SKY_APP_ID",  "")
-_APP_KEY = os.environ.get("CIRIUM_SKY_APP_KEY", "")
-API_AUTH = "Basic " + base64.b64encode(f"{_APP_ID}:{_APP_KEY}".encode()).decode() \
-           if _APP_ID and _APP_KEY else ""
+# Cirium Sky API — Authorization header takes the Identifier directly as the token
+API_TOKEN = os.environ.get("CIRIUM_SKY_APP_ID", "")
 
 # Middle East bounding box: lat 10–45, lon 25–65
 # API expects a bare GeoJSON geometry (Polygon), Content-Type: application/geo+json
@@ -144,8 +140,8 @@ def init_db(db_path):
 
 def fetch_notams():
     """POST to Cirium Sky API with ME bounding box. Returns list of GeoJSON feature dicts."""
-    if not API_AUTH:
-        print("  [API] No credentials — set CIRIUM_SKY_APP_ID and CIRIUM_SKY_APP_KEY in .env")
+    if not API_TOKEN:
+        print("  [API] No credentials — set CIRIUM_SKY_APP_ID in .env")
         return []
 
     url = f"{API_BASE}/v1/notams/"
@@ -155,13 +151,13 @@ def fetch_notams():
             data=json.dumps(ME_GEOMETRY),
             headers={
                 "Content-Type": "application/geo+json",
-                "Authorization": API_AUTH,
+                "Authorization": API_TOKEN,
             },
             timeout=30,
         )
 
         if r.status_code == 401:
-            print("  [API] 401 Unauthorized — check CIRIUM_SKY_APP_ID / CIRIUM_SKY_APP_KEY in .env")
+            print("  [API] 401 Unauthorized — check CIRIUM_SKY_APP_ID in .env")
             return []
 
         r.raise_for_status()
