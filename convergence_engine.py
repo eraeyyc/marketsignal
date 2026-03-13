@@ -1,0 +1,720 @@
+#!/usr/bin/env python3
+"""
+MarketSignal — Convergence Engine (Stage 3)
+
+Reads all signal tables, applies time-decay math, and outputs one escalation
+score + one de-escalation score every N minutes.
+
+State vs Event logic:
+  Events  — single occurrence (bizjet landing, VIP sighting): exponential decay
+             from last_confirmed_at.
+  States  — ongoing condition (ADS-B blackout, active NOTAM): sigmoid growth
+             while active, exponential decay only after resolved.
+
+Coherence multiplier (1.5×) fires only when BOTH participating signals score > 2.0
+to prevent ghost signals from triggering it.
+
+Score is sigmoid-normalised to 0–1 probability space for Polymarket comparison.
+
+Lambda values are per-day rates from the original MarketSignal design doc.
+S_0 initial weights are PLACEHOLDERS — must be calibrated via GDELT back-test.
+
+Usage:
+    python3 convergence_engine.py           # compute once, print scores
+    python3 convergence_engine.py --loop    # continuous loop every 10 minutes
+    python3 convergence_engine.py --status  # print last N scored records
+    python3 convergence_engine.py --signals # print all active signals and scores
+"""
+
+import sqlite3
+import json
+import math
+import os
+import time
+import argparse
+from datetime import datetime, timezone, timedelta
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+
+ADSB_DB       = "adsb_events.db"
+NOTAM_DB      = "notam_events.db"
+GDELT_DB      = "gdelt_events.db"
+ENGINE_DB     = "convergence_engine.db"
+
+POLL_INTERVAL = 600          # 10 minutes
+SIGNAL_WINDOW_DAYS = 30      # ignore signals older than this
+COHERENCE_FLOOR = 2.0        # minimum score per signal before coherence fires
+
+# ── Lambda values (per-day decay rates, Events only) ───────────────────────────
+# ⚠ PLACEHOLDER — calibrate via GDELT back-test before trading
+LAMBDAS = {
+    "strategic_lift":  0.03,
+    "tanker":          0.04,
+    "isr_command":     0.06,
+    "bizjet":          0.10,
+    "route_suspension":0.12,
+    "notam":           0.35,
+    "going_dark":      0.60,
+    # de-escalation signals
+    "deesc_bizjet":    0.10,
+    "deesc_notam_lift":0.35,
+    "gdelt_deesc":     0.009,
+    "gdelt_esc":       0.009,
+}
+
+# ── S_0 initial weights ────────────────────────────────────────────────────────
+# ⚠ PLACEHOLDER — all values below are estimates, not back-tested.
+# Run gdelt_backtest.py (not yet written) to replace these with conditional
+# probabilities derived from 2.5M historical GDELT events.
+S0 = {
+    "traffic_drop_low":      3.0,
+    "traffic_drop_medium":   6.0,
+    "traffic_drop_high":    12.0,
+    "vip_sighting":          5.0,
+    "going_dark":           15.0,
+    "strategic_lift_medium": 8.0,
+    "strategic_lift_high":  16.0,
+    "tanker_medium":         7.0,
+    "tanker_high":          14.0,
+    "isr_medium":           10.0,
+    "isr_high":             20.0,
+    "bizjet_medium":         6.0,
+    "bizjet_high":          12.0,
+    "bizjet_cluster":       10.0,
+    "notam_medium":          7.0,
+    "notam_high":           14.0,
+    "gdelt_escalation":      4.0,
+    "gdelt_deescalation":    4.0,
+}
+
+# Sigmoid normalisation parameters (β=midpoint, α=steepness)
+# ⚠ PLACEHOLDER — β should equal historical average convergence score from back-test
+SIGMOID_BETA  = 30.0   # midpoint: raw score at which probability = 0.50
+SIGMOID_ALPHA = 0.08   # steepness
+
+# Sigmoid growth parameters for States
+STATE_L  = 2.0    # saturation ceiling multiplier on S_0
+STATE_K  = 0.05   # growth rate per hour
+STATE_X0 = 24.0   # inflection point (hours) — routine becomes significant
+
+
+# ── Math ───────────────────────────────────────────────────────────────────────
+
+def hours_elapsed(timestamp_str):
+    """Return hours between a UTC ISO timestamp and now."""
+    if not timestamp_str:
+        return 0.0
+    try:
+        ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+    except Exception:
+        return 0.0
+
+
+def days_elapsed(timestamp_str):
+    return hours_elapsed(timestamp_str) / 24.0
+
+
+def event_score(s0, signal_type, last_confirmed_at):
+    """Exponential decay from last_confirmed_at."""
+    lam = LAMBDAS.get(signal_type, 0.10)
+    dt  = days_elapsed(last_confirmed_at)
+    return s0 * math.exp(-lam * dt)
+
+
+def state_score(s0, first_detected_at, resolved_at=None):
+    """
+    Sigmoid growth while active; exponential decay after resolved.
+    Returns current weight.
+    """
+    duration_h = hours_elapsed(first_detected_at)
+
+    if resolved_at:
+        # State cleared — decay from resolved_at using notam-like rate
+        peak = s0 * STATE_L / (1 + math.exp(-STATE_K * (duration_h - STATE_X0)))
+        dt   = days_elapsed(resolved_at)
+        return peak * math.exp(-LAMBDAS["notam"] * dt)
+    else:
+        # Still active — sigmoid growth
+        return s0 * STATE_L / (1 + math.exp(-STATE_K * (duration_h - STATE_X0)))
+
+
+def to_probability(raw_score):
+    """Sigmoid normalisation: raw convergence score → 0–1 probability."""
+    return 1.0 / (1.0 + math.exp(-SIGMOID_ALPHA * (raw_score - SIGMOID_BETA)))
+
+
+# ── Signal readers ─────────────────────────────────────────────────────────────
+
+def _cutoff():
+    return (datetime.now(timezone.utc) - timedelta(days=SIGNAL_WINDOW_DAYS)).isoformat()
+
+
+def read_traffic_anomalies(adsb_conn):
+    """Traffic drop anomalies — treated as States."""
+    rows = adsb_conn.execute("""
+        SELECT region, region_label, severity, detected_at,
+               last_confirmed_at, resolved_at
+        FROM anomalies
+        WHERE detected_at > ?
+        ORDER BY detected_at DESC
+    """, (_cutoff(),)).fetchall()
+
+    # One active signal per region (most recent)
+    seen = {}
+    signals = []
+    for region, label, severity, detected_at, lca, resolved_at in rows:
+        if region in seen:
+            continue
+        seen[region] = True
+        s0 = S0.get(f"traffic_drop_{(severity or 'low').lower()}", S0["traffic_drop_medium"])
+        score = state_score(s0, detected_at, resolved_at)
+        if score < 0.01:
+            continue
+        signals.append({
+            "type": "traffic_drop",
+            "signal_class": "state",
+            "category": "route_suspension",
+            "track": "escalation",
+            "region": region,
+            "region_label": label or region,
+            "s0": s0,
+            "score": score,
+            "first_detected_at": detected_at,
+            "last_confirmed_at": lca or detected_at,
+            "resolved_at": resolved_at,
+            "severity": severity,
+        })
+    return signals
+
+
+def read_vip_sightings(adsb_conn):
+    """VIP sightings — treated as Events."""
+    rows = adsb_conn.execute("""
+        SELECT icao24, tail_number, operator, category, signal_value,
+               region, region_label, detected_at
+        FROM vip_sightings
+        WHERE detected_at > ?
+        ORDER BY detected_at DESC
+    """, (_cutoff(),)).fetchall()
+
+    # One signal per icao24+region combo (most recent)
+    seen = {}
+    signals = []
+    for icao, tail, operator, category, sig_val, region, label, detected_at in rows:
+        key = (icao, region)
+        if key in seen:
+            continue
+        seen[key] = True
+        s0    = S0["vip_sighting"]
+        score = event_score(s0, "bizjet", detected_at)
+        if score < 0.01:
+            continue
+        track = "deescalation" if category == "diplomatic" else "escalation"
+        signals.append({
+            "type": "vip_sighting",
+            "signal_class": "event",
+            "category": "bizjet",
+            "track": track,
+            "region": region,
+            "region_label": label or region,
+            "s0": s0,
+            "score": score,
+            "first_detected_at": detected_at,
+            "last_confirmed_at": detected_at,
+            "resolved_at": None,
+            "detail": f"{tail} ({operator})",
+        })
+    return signals
+
+
+def read_vip_dark(adsb_conn):
+    """VIP going-dark events — treated as States (high urgency)."""
+    rows = adsb_conn.execute("""
+        SELECT icao24, tail_number, operator, detected_at,
+               last_confirmed_at, resolved_at
+        FROM vip_dark_events
+        WHERE detected_at > ?
+        ORDER BY detected_at DESC
+    """, (_cutoff(),)).fetchall()
+
+    seen = {}
+    signals = []
+    for icao, tail, operator, detected_at, lca, resolved_at in rows:
+        if icao in seen:
+            continue
+        seen[icao] = True
+        s0    = S0["going_dark"]
+        score = state_score(s0, detected_at, resolved_at)
+        if score < 0.01:
+            continue
+        signals.append({
+            "type": "vip_dark",
+            "signal_class": "state",
+            "category": "going_dark",
+            "track": "escalation",
+            "region": "GLOBAL",
+            "region_label": "Global",
+            "s0": s0,
+            "score": score,
+            "first_detected_at": detected_at,
+            "last_confirmed_at": lca or detected_at,
+            "resolved_at": resolved_at,
+            "detail": f"{tail} ({operator})",
+        })
+    return signals
+
+
+def read_type_anomalies(adsb_conn):
+    """Strategic type surges — Events (each detection is discrete)."""
+    rows = adsb_conn.execute("""
+        SELECT region, region_label, category, severity, detected_at,
+               last_confirmed_at, resolved_at, sigma_above
+        FROM type_anomalies
+        WHERE detected_at > ?
+        ORDER BY detected_at DESC
+    """, (_cutoff(),)).fetchall()
+
+    seen = {}
+    signals = []
+    for region, label, category, severity, detected_at, lca, resolved_at, sigma in rows:
+        key = (region, category)
+        if key in seen:
+            continue
+        seen[key] = True
+
+        sev_key = (severity or "MEDIUM").upper()
+        s0_key  = f"{category}_{sev_key.lower()}"
+        s0      = S0.get(s0_key, S0.get(f"{category}_medium", 8.0))
+        score   = event_score(s0, category, lca or detected_at)
+        if score < 0.01:
+            continue
+        signals.append({
+            "type": "type_surge",
+            "signal_class": "event",
+            "category": category,
+            "track": "escalation",
+            "region": region,
+            "region_label": label or region,
+            "s0": s0,
+            "score": score,
+            "first_detected_at": detected_at,
+            "last_confirmed_at": lca or detected_at,
+            "resolved_at": resolved_at,
+            "severity": severity,
+            "sigma": sigma,
+        })
+    return signals
+
+
+def read_bizjet_clusters(adsb_conn):
+    """Bizjet diplomatic clusters — Events, de-escalation track."""
+    rows = adsb_conn.execute("""
+        SELECT airport_name, airport_icao, bizjet_count, countries,
+               detected_at, last_confirmed_at, resolved_at
+        FROM bizjet_clusters
+        WHERE detected_at > ?
+        ORDER BY detected_at DESC
+    """, (_cutoff(),)).fetchall()
+
+    seen = {}
+    signals = []
+    for ap_name, ap_icao, count, countries, detected_at, lca, resolved_at in rows:
+        if ap_icao in seen:
+            continue
+        seen[ap_icao] = True
+        s0    = S0["bizjet_cluster"]
+        score = event_score(s0, "deesc_bizjet", lca or detected_at)
+        if score < 0.01:
+            continue
+        signals.append({
+            "type": "bizjet_cluster",
+            "signal_class": "event",
+            "category": "deesc_bizjet",
+            "track": "deescalation",
+            "region": ap_icao or "UNKNOWN",
+            "region_label": ap_name or ap_icao,
+            "s0": s0,
+            "score": score,
+            "first_detected_at": detected_at,
+            "last_confirmed_at": lca or detected_at,
+            "resolved_at": resolved_at,
+            "detail": f"{count} bizjets | {countries}",
+        })
+    return signals
+
+
+def read_notam_anomalies(notam_conn):
+    """Active airspace restrictions — States."""
+    rows = notam_conn.execute("""
+        SELECT notam_id, location, severity, detected_at,
+               last_confirmed_at, resolved_at
+        FROM notam_anomalies
+        WHERE detected_at > ?
+        ORDER BY detected_at DESC
+    """, (_cutoff(),)).fetchall()
+
+    seen = {}
+    signals = []
+    for notam_id, location, severity, detected_at, lca, resolved_at in rows:
+        if notam_id in seen:
+            continue
+        seen[notam_id] = True
+        sev_key = (severity or "MEDIUM").upper()
+        s0      = S0.get(f"notam_{sev_key.lower()}", S0["notam_medium"])
+        score   = state_score(s0, detected_at, resolved_at)
+        if score < 0.01:
+            continue
+        signals.append({
+            "type": "notam_restriction",
+            "signal_class": "state",
+            "category": "notam",
+            "track": "escalation",
+            "region": location or "UNKNOWN",
+            "region_label": location or "Unknown",
+            "s0": s0,
+            "score": score,
+            "first_detected_at": detected_at,
+            "last_confirmed_at": lca or detected_at,
+            "resolved_at": resolved_at,
+            "severity": severity,
+            "detail": notam_id,
+        })
+    return signals
+
+
+def read_gdelt_signals(gdelt_conn):
+    """
+    GDELT ground truth — recent high-magnitude events.
+    Escalation:    Goldstein < -5, root codes 14–20
+    De-escalation: Goldstein > 5,  root codes 03–08
+    These are Events with slow decay (72h half-life).
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=SIGNAL_WINDOW_DAYS)).strftime("%Y%m%d")
+    signals = []
+
+    # Escalation
+    try:
+        rows = gdelt_conn.execute("""
+            SELECT EventCode, GoldsteinScale, SQLDATE, Actor1CountryCode, Actor2CountryCode
+            FROM events
+            WHERE SQLDATE > ?
+              AND GoldsteinScale < -5
+              AND CAST(SUBSTR(EventCode, 1, 2) AS INTEGER) BETWEEN 14 AND 20
+            ORDER BY GoldsteinScale ASC
+            LIMIT 50
+        """, (cutoff,)).fetchall()
+
+        for code, goldstein, sqldate, a1, a2 in rows:
+            date_str = f"{sqldate[:4]}-{sqldate[4:6]}-{sqldate[6:8]}T12:00:00+00:00"
+            s0    = S0["gdelt_escalation"]
+            score = event_score(s0, "gdelt_esc", date_str)
+            if score < 0.01:
+                continue
+            signals.append({
+                "type": "gdelt_escalation",
+                "signal_class": "event",
+                "category": "gdelt_esc",
+                "track": "escalation",
+                "region": f"{a1 or '?'}-{a2 or '?'}",
+                "region_label": f"GDELT {a1 or '?'}/{a2 or '?'}",
+                "s0": s0,
+                "score": score,
+                "first_detected_at": date_str,
+                "last_confirmed_at": date_str,
+                "resolved_at": None,
+                "detail": f"code={code} goldstein={goldstein}",
+            })
+    except Exception as e:
+        print(f"  [GDELT] Escalation query error: {e}")
+
+    # De-escalation
+    try:
+        rows = gdelt_conn.execute("""
+            SELECT EventCode, GoldsteinScale, SQLDATE, Actor1CountryCode, Actor2CountryCode
+            FROM events
+            WHERE SQLDATE > ?
+              AND GoldsteinScale > 5
+              AND CAST(SUBSTR(EventCode, 1, 2) AS INTEGER) BETWEEN 3 AND 8
+            ORDER BY GoldsteinScale DESC
+            LIMIT 50
+        """, (cutoff,)).fetchall()
+
+        for code, goldstein, sqldate, a1, a2 in rows:
+            date_str = f"{sqldate[:4]}-{sqldate[4:6]}-{sqldate[6:8]}T12:00:00+00:00"
+            s0    = S0["gdelt_deescalation"]
+            score = event_score(s0, "gdelt_deesc", date_str)
+            if score < 0.01:
+                continue
+            signals.append({
+                "type": "gdelt_deescalation",
+                "signal_class": "event",
+                "category": "gdelt_deesc",
+                "track": "deescalation",
+                "region": f"{a1 or '?'}-{a2 or '?'}",
+                "region_label": f"GDELT {a1 or '?'}/{a2 or '?'}",
+                "s0": s0,
+                "score": score,
+                "first_detected_at": date_str,
+                "last_confirmed_at": date_str,
+                "resolved_at": None,
+                "detail": f"code={code} goldstein={goldstein}",
+            })
+    except Exception as e:
+        print(f"  [GDELT] De-escalation query error: {e}")
+
+    return signals
+
+
+# ── Scoring ────────────────────────────────────────────────────────────────────
+
+def calculate_scores(signals):
+    """
+    Sum decayed signal scores by track.
+    Apply coherence multiplier (1.5×) per region where:
+      - 2+ signals from different categories both score > COHERENCE_FLOOR
+    Returns (escalation_raw, deescalation_raw, coherence_events).
+    """
+    esc_total   = 0.0
+    deesc_total = 0.0
+
+    esc_signals   = [s for s in signals if s["track"] == "escalation"]
+    deesc_signals = [s for s in signals if s["track"] == "deescalation"]
+
+    # Base sums
+    for s in esc_signals:
+        esc_total += s["score"]
+    for s in deesc_signals:
+        deesc_total += s["score"]
+
+    # Coherence multiplier — group escalation signals by region
+    coherence_events = []
+    from collections import defaultdict
+    by_region = defaultdict(list)
+    for s in esc_signals:
+        by_region[s["region"]].append(s)
+
+    bonus = 0.0
+    for region, region_signals in by_region.items():
+        qualifying = [s for s in region_signals if s["score"] > COHERENCE_FLOOR]
+        categories = {s["category"] for s in qualifying}
+        if len(categories) >= 2:
+            region_score = sum(s["score"] for s in qualifying)
+            region_bonus = region_score * 0.5  # 1.5× = original + 0.5×
+            bonus += region_bonus
+            coherence_events.append({
+                "region": region,
+                "categories": sorted(categories),
+                "qualifying_signals": len(qualifying),
+                "bonus": round(region_bonus, 2),
+            })
+
+    esc_total += bonus
+
+    # Divergence: if GDELT shows de-escalation but ADS-B shows escalation
+    # flag as narrative incoherence (informational only, no score impact here)
+    gdelt_esc   = sum(s["score"] for s in esc_signals   if s["type"] == "gdelt_escalation")
+    gdelt_deesc = sum(s["score"] for s in deesc_signals if s["type"] == "gdelt_deescalation")
+    adsb_esc    = sum(s["score"] for s in esc_signals   if s["type"] in ("traffic_drop", "type_surge"))
+
+    divergence = None
+    if gdelt_deesc > gdelt_esc and adsb_esc > 5.0:
+        divergence = "NARRATIVE_INCOHERENCE: GDELT de-escalating, ADS-B escalating — potential alpha signal"
+    elif gdelt_esc > gdelt_deesc and deesc_total > esc_total:
+        divergence = "NARRATIVE_INCOHERENCE: GDELT escalating, physical signals de-escalating"
+
+    return esc_total, deesc_total, coherence_events, divergence
+
+
+# ── Output DB ──────────────────────────────────────────────────────────────────
+
+def init_engine_db():
+    conn = sqlite3.connect(ENGINE_DB)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scores (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            computed_at        TEXT NOT NULL,
+            escalation_raw     REAL,
+            deescalation_raw   REAL,
+            escalation_prob    REAL,
+            deescalation_prob  REAL,
+            active_signal_count INTEGER,
+            coherence_events   TEXT,   -- JSON
+            divergence_flag    TEXT,
+            dominant_signals   TEXT    -- JSON: top 5 signals by score
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_scores_time ON scores(computed_at)")
+    conn.commit()
+    return conn
+
+
+def save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, divergence):
+    now         = datetime.now(timezone.utc).isoformat()
+    esc_prob    = to_probability(esc_raw)
+    deesc_prob  = to_probability(deesc_raw)
+
+    top5 = sorted(signals, key=lambda s: s["score"], reverse=True)[:5]
+    top5_json = json.dumps([{
+        "type": s["type"],
+        "region": s["region"],
+        "score": round(s["score"], 2),
+        "track": s["track"],
+    } for s in top5])
+
+    engine_conn.execute("""
+        INSERT INTO scores
+            (computed_at, escalation_raw, deescalation_raw,
+             escalation_prob, deescalation_prob, active_signal_count,
+             coherence_events, divergence_flag, dominant_signals)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        now,
+        round(esc_raw, 3),
+        round(deesc_raw, 3),
+        round(esc_prob, 4),
+        round(deesc_prob, 4),
+        len(signals),
+        json.dumps(coherence_events),
+        divergence,
+        top5_json,
+    ))
+    engine_conn.commit()
+
+
+# ── Main compute ───────────────────────────────────────────────────────────────
+
+def compute(verbose=True):
+    # Open all source DBs (read-only where possible)
+    adsb_conn   = sqlite3.connect(f"file:{ADSB_DB}?mode=ro", uri=True)  if os.path.exists(ADSB_DB)  else None
+    notam_conn  = sqlite3.connect(f"file:{NOTAM_DB}?mode=ro", uri=True) if os.path.exists(NOTAM_DB) else None
+    gdelt_conn  = sqlite3.connect(f"file:{GDELT_DB}?mode=ro", uri=True) if os.path.exists(GDELT_DB) else None
+    engine_conn = init_engine_db()
+
+    signals = []
+
+    if adsb_conn:
+        signals += read_traffic_anomalies(adsb_conn)
+        signals += read_vip_sightings(adsb_conn)
+        signals += read_vip_dark(adsb_conn)
+        signals += read_type_anomalies(adsb_conn)
+        signals += read_bizjet_clusters(adsb_conn)
+        adsb_conn.close()
+
+    if notam_conn:
+        signals += read_notam_anomalies(notam_conn)
+        notam_conn.close()
+
+    if gdelt_conn:
+        signals += read_gdelt_signals(gdelt_conn)
+        gdelt_conn.close()
+
+    esc_raw, deesc_raw, coherence_events, divergence = calculate_scores(signals)
+    esc_prob  = to_probability(esc_raw)
+    deesc_prob = to_probability(deesc_raw)
+
+    save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, divergence)
+    engine_conn.close()
+
+    if verbose:
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%MZ")
+        print(f"\nConvergence Engine — {now_str}")
+        print("=" * 65)
+        print(f"  Active signals:      {len(signals)}")
+        print(f"  Escalation raw:      {esc_raw:.2f}")
+        print(f"  De-escalation raw:   {deesc_raw:.2f}")
+        print(f"  Escalation prob:     {esc_prob*100:.1f}%  ⚠ UNCALIBRATED")
+        print(f"  De-escalation prob:  {deesc_prob*100:.1f}%  ⚠ UNCALIBRATED")
+        if coherence_events:
+            print(f"\n  Coherence multiplier active in {len(coherence_events)} region(s):")
+            for ce in coherence_events:
+                print(f"    {ce['region']}: {', '.join(ce['categories'])}  +{ce['bonus']:.1f} pts")
+        if divergence:
+            print(f"\n  *** {divergence} ***")
+
+        top5 = sorted(signals, key=lambda s: s["score"], reverse=True)[:5]
+        if top5:
+            print(f"\n  Top signals:")
+            for s in top5:
+                print(f"    [{s['track'][:3].upper()}] {s['type']:<22} {s['region']:<12} score={s['score']:.2f}")
+
+    return esc_raw, deesc_raw, esc_prob, deesc_prob, signals
+
+
+def print_status():
+    if not os.path.exists(ENGINE_DB):
+        print("No engine DB yet. Run without --status first.")
+        return
+    conn = sqlite3.connect(ENGINE_DB)
+    rows = conn.execute("""
+        SELECT computed_at, escalation_raw, deescalation_raw,
+               escalation_prob, deescalation_prob,
+               active_signal_count, divergence_flag
+        FROM scores
+        ORDER BY computed_at DESC
+        LIMIT 20
+    """).fetchall()
+    print(f"\nLast {len(rows)} convergence scores:")
+    print(f"  {'Time':<20} {'Esc Raw':>8} {'Deesc Raw':>10} {'Esc%':>7} {'Deesc%':>8}  Sigs  Flag")
+    print("  " + "-" * 70)
+    for computed_at, er, dr, ep, dp, sigs, flag in rows:
+        flag_str = " DIVERGE" if flag else ""
+        print(f"  {computed_at[:16]:<20} {er:>8.2f} {dr:>10.2f} {ep*100:>6.1f}% {dp*100:>7.1f}%  {sigs:>4}{flag_str}")
+    conn.close()
+
+
+def print_signals():
+    """Print all active signals and their current decayed scores."""
+    _, _, _, _, signals = compute(verbose=False)
+    if not signals:
+        print("No active signals in the last 30 days.")
+        return
+    esc   = sorted([s for s in signals if s["track"] == "escalation"],   key=lambda s: -s["score"])
+    deesc = sorted([s for s in signals if s["track"] == "deescalation"], key=lambda s: -s["score"])
+
+    print(f"\nEscalation signals ({len(esc)}):")
+    print(f"  {'Type':<22} {'Region':<14} {'Category':<18} {'S0':>5} {'Score':>7}  Class")
+    print("  " + "-" * 72)
+    for s in esc:
+        print(f"  {s['type']:<22} {s['region']:<14} {s['category']:<18} {s['s0']:>5.1f} {s['score']:>7.2f}  {s['signal_class']}")
+
+    print(f"\nDe-escalation signals ({len(deesc)}):")
+    for s in deesc:
+        print(f"  {s['type']:<22} {s['region']:<14} {s['category']:<18} {s['s0']:>5.1f} {s['score']:>7.2f}  {s['signal_class']}")
+
+
+# ── Entry point ────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--loop",    action="store_true", help="Run continuously every 10 minutes")
+    parser.add_argument("--status",  action="store_true", help="Print last 20 scored records")
+    parser.add_argument("--signals", action="store_true", help="Print all active signals and scores")
+    args = parser.parse_args()
+
+    if args.status:
+        print_status()
+        return
+
+    if args.signals:
+        print_signals()
+        return
+
+    if args.loop:
+        print(f"Convergence engine running every {POLL_INTERVAL // 60} minutes. Ctrl+C to stop.")
+        while True:
+            try:
+                compute()
+                print(f"  Sleeping {POLL_INTERVAL // 60}m...")
+                time.sleep(POLL_INTERVAL)
+            except KeyboardInterrupt:
+                print("\nStopped.")
+                break
+    else:
+        compute()
+
+
+if __name__ == "__main__":
+    main()

@@ -69,6 +69,13 @@ def is_restriction(qcode):
 
 # ── Database ───────────────────────────────────────────────────────────────────
 
+def _add_column(conn, table, column, col_type):
+    """Add a column to an existing table if it doesn't already exist."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+
+
 def init_db(db_path):
     conn = sqlite3.connect(db_path)
     conn.execute("""
@@ -96,23 +103,29 @@ def init_db(db_path):
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS notam_anomalies (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            detected_at      TEXT NOT NULL,
-            notam_id         TEXT NOT NULL,
-            location         TEXT,
-            country_code     TEXT,
-            qcode            TEXT,
-            restriction_type TEXT,
-            lat              REAL,
-            lon              REAL,
-            radius_nm        REAL,
-            effective_start  TEXT,
-            effective_end    TEXT,
-            raw_text         TEXT,
-            anomaly_type     TEXT DEFAULT 'new_restriction',
-            severity         TEXT
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at       TEXT NOT NULL,
+            notam_id          TEXT NOT NULL,
+            location          TEXT,
+            country_code      TEXT,
+            qcode             TEXT,
+            restriction_type  TEXT,
+            lat               REAL,
+            lon               REAL,
+            radius_nm         REAL,
+            effective_start   TEXT,
+            effective_end     TEXT,
+            raw_text          TEXT,
+            anomaly_type      TEXT DEFAULT 'new_restriction',
+            severity          TEXT,
+            last_confirmed_at TEXT,             -- updated each poll while NOTAM still active
+            resolved_at       TEXT              -- set when NOTAM no longer returned by API
         )
     """)
+    # ── Migrate existing tables ──────────────────────────────────────────────────
+    _add_column(conn, "notam_anomalies", "last_confirmed_at", "TEXT")
+    _add_column(conn, "notam_anomalies", "resolved_at",       "TEXT")
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_notam_qcode    ON notams(qcode)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_notam_location ON notams(location)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_notam_start    ON notams(effective_start)")

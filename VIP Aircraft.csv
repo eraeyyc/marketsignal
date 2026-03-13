@@ -2,12 +2,23 @@ tail_number,icao24,country,operator,aircraft_type,category,signal_value,notes
 A6-MMM,8960ae,UAE,UAE Presidential Flight,B744,diplomatic,high,Boeing 747-400 — ministers royals and diplomatic missions
 A7-HHE,06a0a2,Qatar,Qatar Amiri Flight,B748,diplomatic,high,Boeing 747-8 — royal family state transport
 EP-AJA,730541,Iran,Iranian Government,A343,diplomatic,high,Airbus A340-300 — state delegations VIP transport
+EP-AGA,7324e1,Iran,Iranian Government,A343,diplomatic,high,Presidential A340-300 — second Iranian state aircraft
 A9C-BRF,8940b7,Bahrain,Bahrain Royal Flight,RJ70,diplomatic,high,BAe Avro RJ70 — royal flight
 RA-76363,152a4b,Russia,EMERCOM,IL76,strategic_lift,medium,IL-76 — disaster response and humanitarian flights
+RA-96022,151d16,Russia,Rossiya Special Flight Squadron,IL96,diplomatic,high,Putin's Il-96 — Rossiya Special Flight Squadron
 ZE707,43c704,UK,RAF,B462,diplomatic,medium,BAe 146 — RAF VIP transport
 OO-FAE,449825,Belgium,Belgian Air Force,FA7X,diplomatic,medium,Falcon 7X — ministers and diplomats
+SU-EGY,010230,Egypt,Egyptian Government,B748,diplomatic,high,Presidential Boeing 747-8
+HZ-HM1,710333,Saudi Arabia,Saudi Royal Flight,B744,diplomatic,high,King Salman's Boeing 747-400
+VQ-BJO,42450f,Jordan,Jordanian Royal Court,GL7T,diplomatic,high,King Abdullah II's Global 7500 — newly delivered
+B-4025,780005,China,PLA Air Force,IL76,strategic_lift,high,IL-76 VIP/diplomatic transport — PLA high command
+73-1676,adfeb3,USA,USAF,E4B,command,high,E-4B NAOC Doomsday — airborne nuclear command post
+73-1677,adfeb4,USA,USAF,E4B,command,high,E-4B NAOC Doomsday — airborne nuclear command post
+40787,adfeb5,USA,USAF,E4B,command,high,E-4B NAOC — alternate airframe (74-0787)
+75-0125,adfeb6,USA,USAF,E4B,command,high,E-4B NAOC — alternate airframe
+98-0001,adf28c,USA,USAF,C32A,diplomatic,high,C-32A Air Force Two — VP and SecState transport
+02-4452,ae043b,USA,USAF,C32B,command,high,C-32B Gatekeeper — clandestine/special ops transport — often dark
 LZ-001,,Bulgaria,Bulgarian Government,F900,diplomatic,low,Government transport — ICAO24 not found in database
-40787,,USA,USAF,E4B,command,high,National Airborne Operations Center — Doomsday plane — needs ICAO24
 33125,,USA,USAF,C17,strategic_lift,medium,AMC Joint Base McGuire-Dix-Lakehurst — needs ICAO24
 330002,,Canada,RCAF,A332,tanker_transport,medium,CC-330 Airbus A330 MRTT — needs ICAO24
 40142,,USA,USAF,C12,isr,medium,RC-12 ISR aircraft Scott AFB — needs ICAO24

@@ -241,6 +241,13 @@ WATCHED_AIRLINES = {
 
 # ── Database ───────────────────────────────────────────────────────────────────
 
+def _add_column(conn, table, column, col_type):
+    """Add a column to an existing table if it doesn't already exist."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+
+
 def init_db(db_path):
     conn = sqlite3.connect(db_path)
     conn.execute("""
@@ -260,14 +267,16 @@ def init_db(db_path):
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS anomalies (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            detected_at     TEXT NOT NULL,
-            region          TEXT NOT NULL,
-            region_label    TEXT,
-            current_count   INTEGER,
-            baseline_avg    REAL,
-            drop_pct        REAL,
-            severity        TEXT                    -- LOW / MEDIUM / HIGH
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at       TEXT NOT NULL,
+            region            TEXT NOT NULL,
+            region_label      TEXT,
+            current_count     INTEGER,
+            baseline_avg      REAL,
+            drop_pct          REAL,
+            severity          TEXT,                  -- LOW / MEDIUM / HIGH
+            last_confirmed_at TEXT,                  -- updated each poll while drop persists
+            resolved_at       TEXT                   -- set when drop clears
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_snap_region  ON snapshots(region)")
@@ -309,16 +318,18 @@ def init_db(db_path):
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS vip_dark_events (
-            id             INTEGER PRIMARY KEY AUTOINCREMENT,
-            detected_at    TEXT NOT NULL,
-            icao24         TEXT NOT NULL,
-            tail_number    TEXT,
-            operator       TEXT,
-            last_seen_at   TEXT,
-            last_region    TEXT,
-            last_lat       REAL,
-            last_lon       REAL,
-            hours_dark     REAL
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at       TEXT NOT NULL,
+            icao24            TEXT NOT NULL,
+            tail_number       TEXT,
+            operator          TEXT,
+            last_seen_at      TEXT,
+            last_region       TEXT,
+            last_lat          REAL,
+            last_lon          REAL,
+            hours_dark        REAL,
+            last_confirmed_at TEXT,                  -- updated each poll while still dark
+            resolved_at       TEXT                   -- set when aircraft reappears
         )
     """)
 
@@ -335,28 +346,32 @@ def init_db(db_path):
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS type_anomalies (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            detected_at     TEXT NOT NULL,
-            region          TEXT NOT NULL,
-            region_label    TEXT,
-            category        TEXT NOT NULL,
-            current_count   INTEGER,
-            baseline_mean   REAL,
-            baseline_std    REAL,
-            sigma_above     REAL,
-            severity        TEXT,             -- MEDIUM (2-3σ) / HIGH (>3σ)
-            aircraft_seen   TEXT              -- JSON list of [icao24, typecode] spotted
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at       TEXT NOT NULL,
+            region            TEXT NOT NULL,
+            region_label      TEXT,
+            category          TEXT NOT NULL,
+            current_count     INTEGER,
+            baseline_mean     REAL,
+            baseline_std      REAL,
+            sigma_above       REAL,
+            severity          TEXT,             -- MEDIUM (2-3σ) / HIGH (>3σ)
+            aircraft_seen     TEXT,             -- JSON list of [icao24, typecode] spotted
+            last_confirmed_at TEXT,             -- updated each poll while surge persists
+            resolved_at       TEXT              -- set when count drops back to baseline
         )
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS bizjet_clusters (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            detected_at     TEXT NOT NULL,
-            airport_name    TEXT,
-            airport_icao    TEXT,
-            bizjet_count    INTEGER,
-            countries       TEXT,             -- JSON list of origin countries
-            aircraft_json   TEXT              -- JSON list of [icao24, typecode, country, lat, lon]
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at       TEXT NOT NULL,
+            airport_name      TEXT,
+            airport_icao      TEXT,
+            bizjet_count      INTEGER,
+            countries         TEXT,             -- JSON list of origin countries
+            aircraft_json     TEXT,             -- JSON list of [icao24, typecode, country, lat, lon]
+            last_confirmed_at TEXT,             -- updated each poll while cluster persists
+            resolved_at       TEXT              -- set when cluster disperses
         )
     """)
 
@@ -369,6 +384,16 @@ def init_db(db_path):
             operator      TEXT
         )
     """)
+
+    # ── Migrate existing tables (add columns if they don't exist yet) ───────────
+    _add_column(conn, "anomalies",     "last_confirmed_at", "TEXT")
+    _add_column(conn, "anomalies",     "resolved_at",       "TEXT")
+    _add_column(conn, "vip_dark_events","last_confirmed_at","TEXT")
+    _add_column(conn, "vip_dark_events","resolved_at",      "TEXT")
+    _add_column(conn, "type_anomalies","last_confirmed_at", "TEXT")
+    _add_column(conn, "type_anomalies","resolved_at",       "TEXT")
+    _add_column(conn, "bizjet_clusters","last_confirmed_at","TEXT")
+    _add_column(conn, "bizjet_clusters","resolved_at",      "TEXT")
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vip_icao     ON vip_sightings(icao24)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vip_time     ON vip_sightings(detected_at)")
