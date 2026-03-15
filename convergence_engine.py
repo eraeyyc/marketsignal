@@ -84,15 +84,15 @@ S0 = {
     "bizjet_medium":         6.0,
     "bizjet_high":          12.0,
     "bizjet_cluster":       10.0,
-    "notam_medium":          7.0,
-    "notam_high":           14.0,
+    "notam_medium":          3.0,
+    "notam_high":            5.0,
     "gdelt_escalation":      4.0,
     "gdelt_deescalation":    4.0,
 }
 
 # Sigmoid normalisation parameters (β=midpoint, α=steepness)
 # ⚠ PLACEHOLDER — β should equal historical average convergence score from back-test
-SIGMOID_BETA  = 30.0   # midpoint: raw score at which probability = 0.50
+SIGMOID_BETA  = 100.0  # midpoint: raw score at which probability = 0.50
 SIGMOID_ALPHA = 0.08   # steepness
 
 # Sigmoid growth parameters for States
@@ -406,7 +406,34 @@ def read_bizjet_clusters(adsb_conn):
 
 
 def read_notam_anomalies(notam_conn):
-    """Active airspace restrictions — States."""
+    """Active airspace restrictions — States.
+
+    One signal per FIR (location), taking the worst severity active in that FIR.
+    Only counts NOTAMs from Middle East FIRs — the Cirium bounding box also returns
+    FIRs from Romania, Russia, Greece, India etc. whose boundaries overlap the ME box.
+    """
+    ME_FIRS = {
+        "OIIX",  # Iran Tehran
+        "OIFM",  # Iran Esfahan
+        "OEJD",  # Saudi Arabia Jeddah
+        "OERK",  # Saudi Arabia Riyadh
+        "OOMM",  # Oman Muscat
+        "OMAE",  # UAE Emirates
+        "HECC",  # Egypt Cairo
+        "HECA",  # Egypt Cairo ACC
+        "OTDF",  # Qatar Doha
+        "LCCC",  # Cyprus Nicosia
+        "OLBB",  # Lebanon Beirut
+        "ORBB",  # Iraq Baghdad
+        "LLLL",  # Israel Tel Aviv
+        "OBBB",  # Bahrain
+        "OKAC",  # Kuwait
+        "OYSC",  # Yemen Sana'a
+        "OJAI",  # Jordan Amman
+        "OSTT",  # Syria Damascus
+        "HESH",  # Egypt Sharm el-Sheikh
+    }
+
     try:
         rows = notam_conn.execute("""
             SELECT notam_id, location, severity, detected_at,
@@ -418,12 +445,20 @@ def read_notam_anomalies(notam_conn):
     except sqlite3.OperationalError:
         return []  # table not yet created (NOTAM collector not yet activated)
 
-    seen = {}
-    signals = []
+    # Deduplicate by FIR (location), keep worst severity
+    sev_rank = {"HIGH": 2, "MEDIUM": 1}
+    fir_best = {}  # location → (severity, detected_at, lca, resolved_at, notam_id)
     for notam_id, location, severity, detected_at, lca, resolved_at in rows:
-        if notam_id in seen:
+        fir = (location or "").upper()
+        if fir not in ME_FIRS:
             continue
-        seen[notam_id] = True
+        cur = fir_best.get(fir)
+        rank = sev_rank.get((severity or "MEDIUM").upper(), 1)
+        if cur is None or rank > sev_rank.get(cur[0], 1):
+            fir_best[fir] = (severity, detected_at, lca, resolved_at, notam_id)
+
+    signals = []
+    for fir, (severity, detected_at, lca, resolved_at, notam_id) in fir_best.items():
         sev_key = (severity or "MEDIUM").upper()
         s0      = S0.get(f"notam_{sev_key.lower()}", S0["notam_medium"])
         score   = state_score(s0, detected_at, resolved_at)
@@ -434,8 +469,8 @@ def read_notam_anomalies(notam_conn):
             "signal_class": "state",
             "category": "notam",
             "track": "escalation",
-            "region": location or "UNKNOWN",
-            "region_label": location or "Unknown",
+            "region": fir,
+            "region_label": fir,
             "s0": s0,
             "score": score,
             "first_detected_at": detected_at,
