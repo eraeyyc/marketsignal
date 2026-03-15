@@ -417,7 +417,7 @@ else:
         styled = (
             display_df[show_cols]
             .style
-            .applymap(_style_edge, subset=["Edge"])
+            .map(_style_edge, subset=["Edge"])
             .format({"Edge": lambda v: f"{v:+.1f}%" if v is not None else "—"})
         )
 
@@ -597,7 +597,16 @@ use sigmoid growth while active — the longer the condition holds, the higher t
 up to a saturation ceiling of 2× S₀:
 > Score = S₀ × 2 / (1 + e^(−0.05 × (hours − 24)))
 
-Once the condition clears, it switches to exponential decay from the peak it reached.
+Once the condition clears, it switches to exponential decay from the peak it reached,
+using the signal's own λ — so a resolved ISR orbit (λ=0.06) stays relevant for weeks,
+while a lifted NOTAM (λ=0.35) fades in days.
+
+**Score velocity:** a rising score earns a bonus before the sigmoid step:
+> Velocity bonus = min(score_now − score_24h ago, 30) × 0.30
+
+A score accelerating from 20 → 40 → 80 is treated more urgently than a static 80.
+The bonus is applied only to the probability calculation — the stored raw score is
+never inflated, so the history chart remains comparable across time.
 
 **Coherence bonus (1.5×):** if 2+ signal categories both score >2.0 in the same macro-zone
 (GULF, LEVANT, IRAN, YEMEN\_RED\_SEA, etc.) simultaneously, that zone's subtotal gets a 50% bonus.
