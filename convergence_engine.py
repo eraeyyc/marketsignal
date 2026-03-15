@@ -103,7 +103,9 @@ S0 = {
 
 # Sigmoid normalisation parameters (β=midpoint, α=steepness)
 # ⚠ PLACEHOLDER — β should equal historical average convergence score from back-test
-SIGMOID_BETA  = 100.0  # midpoint: raw score at which probability = 0.50
+SIGMOID_BETA  = 200.0  # midpoint: raw score at which probability = 0.50
+                       # raised 100→200: live baseline with type_surges + NOTAMs + spoofing
+                       # routinely sits at 150–200; β=100 was saturating to 100% too easily
 SIGMOID_ALPHA = 0.08   # steepness
 
 # Velocity (score acceleration) parameters
