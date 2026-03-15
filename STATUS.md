@@ -127,27 +127,24 @@ Run with: `streamlit run dashboard.py`
 
 ## Known Issues / Blockers
 
-### Convergence scores are uncalibrated
-S_0 weights and sigmoid midpoint are placeholder values. Scores will compute but
-probabilities are meaningless until back-tested against GDELT historical data.
-Next step: write `gdelt_backtest.py` to derive conditional probabilities.
+### GDELT signal is saturated — do not trade on convergence scores yet
+`gdelt_backtest.py` (2026-03-14) found a structural problem: with `LIMIT 50` and
+`λ=0.009/day` (77-day half-life), the Middle East always has 1000+ qualifying events
+in any 30-day window, so the score permanently saturates at ~152 regardless of
+what's happening. P≈100% always — meaningless.
 
-### ADS-B baseline needs ~25h to activate
-Type surge anomaly detection (Mode B) needs >24h of polling history.
-VPS has been running since 2026-03-13 03:17Z — baseline should activate ~2026-03-14 04:00Z.
+The event density signal IS real (1.3×–3.1× spike around actual events), but the
+current extraction design can't see it. Required fixes:
+- Remove `LIMIT 50` → raise to `LIMIT 500` in `convergence_engine.py`
+- `S0["gdelt_escalation"] = 0.05` (was 4.0) to prevent saturation
+- `LAMBDAS["gdelt_esc"] = 0.10` (was 0.009, 7-day half-life)
+- Re-run `gdelt_backtest.py` after parameter changes to re-derive `SIGMOID_BETA`
+
+Until these are applied, **ADS-B + NOTAM layers are the only discriminating signals**.
 
 ### ADS-B coverage gaps — conflict zones show zero
 Lebanon/Syria and Yemen/Red Sea consistently return 0 — transponders off in active
 conflict zones. Expected, but limits coverage in key areas.
-
-### Collectors don't yet update last_confirmed_at
-The schema has `last_confirmed_at` but collectors still INSERT new rows per detection
-rather than updating the existing active row. Convergence engine falls back to
-`detected_at` in the meantime. Full upsert logic is the next collector update.
-
-### Convergence engine not yet running as systemd service
-`convergence_engine.py --loop` needs a service file written and deployed to the VPS.
-Currently must be run manually.
 
 ### VIP watchlist — 21 of 49 aircraft missing ICAO24
 Still need manual lookup for: Air Force One (VC-25A), most C-32A fleet, C-37B/C-40B,
@@ -214,6 +211,7 @@ pages/
 gdelt_collector.py              BigQuery → SQLite pipeline
 gdelt_verify.py                 Historical event verification (5 events)
 gdelt_query.py                  Ad-hoc date range query tool
+gdelt_backtest.py               GDELT signal back-test + calibration diagnostics
 adsb_collector.py               OpenSky polling + Mode A/B detection
 notam_collector.py              Cirium Sky API NOTAM collection
 convergence_engine.py           Stage 3 scoring daemon
