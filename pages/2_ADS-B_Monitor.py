@@ -9,12 +9,16 @@ import pandas as pd
 import sqlite3
 import json
 from datetime import datetime, timezone
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.styles import inject_css, page_header, plotly_layout, axis_style
 
 st.set_page_config(
     page_title="MarketSignal — ADS-B Monitor",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+inject_css()
 
 DB_PATH = "adsb_events.db"
 
@@ -128,13 +132,11 @@ def chart_current_counts(rows):
         marker_color=colors,
         hovertemplate="%{x}<br>Aircraft: %{y}<extra></extra>",
     ))
-    fig.update_layout(
-        template="plotly_dark",
+    fig.update_layout(**plotly_layout(
         height=300,
-        margin=dict(l=0, r=0, t=10, b=0),
-        yaxis=dict(title="Aircraft count", gridcolor="rgba(255,255,255,0.05)"),
-        xaxis=dict(tickangle=-20),
-    )
+        yaxis=dict(title="Aircraft count", **axis_style()),
+        xaxis=dict(tickangle=-20, **axis_style()),
+    ))
     return fig
 
 
@@ -157,22 +159,20 @@ def chart_timeseries(df, selected_regions, hours):
             marker=dict(size=4),
             hovertemplate=f"{region}<br>%{{x|%H:%M}}<br>Aircraft: %{{y}}<extra></extra>",
         ))
-    fig.update_layout(
-        template="plotly_dark",
+    fig.update_layout(**plotly_layout(
         height=380,
-        margin=dict(l=0, r=0, t=10, b=0),
-        legend=dict(orientation="h", y=1.08),
-        hovermode="x unified",
-        yaxis=dict(title="Aircraft count", gridcolor="rgba(255,255,255,0.05)"),
-        xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-    )
+        yaxis=dict(title="Aircraft count", **axis_style()),
+        xaxis=axis_style(),
+    ))
     return fig
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-st.markdown("## ADS-B Airspace Monitor")
-st.caption("Live aircraft state vectors via OpenSky Network — Middle East bounding boxes")
+page_header(
+    "ADS-B Monitor",
+    "Live aircraft state vectors via OpenSky Network — Middle East bounding boxes",
+)
 
 # Check DB exists
 try:

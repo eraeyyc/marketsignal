@@ -64,6 +64,7 @@ LAMBDAS = {
     "gdelt_esc":       0.009,
     "ais_tanker":      0.04,
     "ais_military":    0.06,
+    "ais_spoofing":    0.20,   # half-life ~3.5 days — significant but time-sensitive
 }
 
 # ── S_0 initial weights ────────────────────────────────────────────────────────
@@ -95,12 +96,23 @@ S0 = {
     "ais_tanker_high":      12.0,
     "ais_military_high":    14.0,
     "ais_watchlist":         8.0,
+    "ais_spoofing_low":      8.0,   # isolated event — could be technical
+    "ais_spoofing_medium":  14.0,   # 2–4 events — likely deliberate
+    "ais_spoofing_high":    20.0,   # 5+ events — active jamming/spoofing campaign
 }
 
 # Sigmoid normalisation parameters (β=midpoint, α=steepness)
 # ⚠ PLACEHOLDER — β should equal historical average convergence score from back-test
 SIGMOID_BETA  = 100.0  # midpoint: raw score at which probability = 0.50
 SIGMOID_ALPHA = 0.08   # steepness
+
+# Velocity (score acceleration) parameters
+# A rising score gets a bonus proportional to its 24h rate of change.
+# This means a score that goes 10→20→40 is treated more urgently than a static 40,
+# which matches how intelligence analysts actually think about signal acceleration.
+VELOCITY_WEIGHT     = 0.30   # bonus = velocity_24h * this weight (if positive)
+VELOCITY_LOOKBACK_H = 24     # hours to look back for velocity comparison
+VELOCITY_MAX_BONUS  = 30.0   # hard cap on velocity bonus to prevent runaway amplification
 
 # Sigmoid growth parameters for States
 STATE_L  = 2.0    # saturation ceiling multiplier on S_0
@@ -134,20 +146,30 @@ def event_score(s0, signal_type, last_confirmed_at):
     return s0 * math.exp(-lam * dt)
 
 
-def state_score(s0, first_detected_at, resolved_at=None):
+def state_score(s0, first_detected_at, signal_type, resolved_at=None):
     """
     Sigmoid growth while active; exponential decay after resolved.
+
+    signal_type selects the decay lambda used after resolution — each state type
+    should decay at its own characteristic rate once the condition clears:
+      going_dark      λ=0.60  — reappearance closes the threat window quickly
+      notam           λ=0.35  — lifted restrictions fade in days
+      route_suspension λ=0.12 — airlines take time to resume routes
+      isr_command     λ=0.06  — intelligence requirement doesn't vanish on landing
+      strategic_lift  λ=0.03  — repositioned assets stay relevant for weeks
+
     Returns current weight.
     """
     duration_h = hours_elapsed(first_detected_at)
+    lam        = LAMBDAS.get(signal_type, LAMBDAS["notam"])
 
     if resolved_at:
-        # State cleared — decay from resolved_at using notam-like rate
+        # State cleared — grow to peak as if still active, then decay from resolution
         peak = s0 * STATE_L / (1 + math.exp(-STATE_K * (duration_h - STATE_X0)))
         dt   = days_elapsed(resolved_at)
-        return peak * math.exp(-LAMBDAS["notam"] * dt)
+        return peak * math.exp(-lam * dt)
     else:
-        # Still active — sigmoid growth
+        # Still active — sigmoid growth toward 2×S0 ceiling
         return s0 * STATE_L / (1 + math.exp(-STATE_K * (duration_h - STATE_X0)))
 
 
@@ -180,7 +202,7 @@ def read_traffic_anomalies(adsb_conn):
             continue
         seen[region] = True
         s0 = S0.get(f"traffic_drop_{(severity or 'low').lower()}", S0["traffic_drop_medium"])
-        score = state_score(s0, detected_at, resolved_at)
+        score = state_score(s0, detected_at, "route_suspension", resolved_at)
         if score < 0.01:
             continue
         signals.append({
@@ -251,7 +273,7 @@ def read_vip_sightings(adsb_conn):
             sig   = (sig_val or "medium").lower()
             cat   = category  # "isr" or "command"
             s0    = S0.get(f"{cat}_{sig}", S0.get(f"{cat}_medium", S0["isr_medium"]))
-            score = state_score(s0, first_seen, resolved_at)
+            score = state_score(s0, first_seen, "isr_command", resolved_at)
             if score < 0.01:
                 continue
 
@@ -313,7 +335,7 @@ def read_vip_dark(adsb_conn):
             continue
         seen[icao] = True
         s0    = S0["going_dark"]
-        score = state_score(s0, detected_at, resolved_at)
+        score = state_score(s0, detected_at, "going_dark", resolved_at)
         if score < 0.01:
             continue
         signals.append({
@@ -468,7 +490,7 @@ def read_notam_anomalies(notam_conn):
     for fir, (severity, detected_at, lca, resolved_at, notam_id) in fir_best.items():
         sev_key = (severity or "MEDIUM").upper()
         s0      = S0.get(f"notam_{sev_key.lower()}", S0["notam_medium"])
-        score   = state_score(s0, detected_at, resolved_at)
+        score   = state_score(s0, detected_at, "notam", resolved_at)
         if score < 0.01:
             continue
         signals.append({
@@ -637,6 +659,95 @@ def read_ais_anomalies(ais_conn):
     return signals
 
 
+def read_spoofing_events(ais_conn):
+    """
+    GPS spoofing events — Events, escalation track.
+
+    Groups by maritime region within the signal window. Tiers S_0 by cluster size:
+      1 event   → LOW    (could be technical glitch)
+      2–4 events → MEDIUM (likely deliberate)
+      5+ events  → HIGH   (active jamming/spoofing campaign)
+
+    Note: spoofing_events has lat/lon but no region field, so we do an inline
+    region lookup mirroring ais_collector.py REGIONS.
+    """
+    # Inline region lookup (mirrors ais_collector.py REGIONS, Hormuz first so it
+    # matches before the broader Persian Gulf box that contains it)
+    AIS_REGIONS = [
+        {"id": "hormuz",       "label": "Strait of Hormuz", "lat": (25.5, 27.0), "lon": (56.0, 58.0)},
+        {"id": "persian_gulf", "label": "Persian Gulf",     "lat": (22.0, 30.0), "lon": (48.0, 60.0)},
+        {"id": "red_sea",      "label": "Red Sea",          "lat": (12.0, 30.0), "lon": (32.0, 44.0)},
+        {"id": "gulf_of_aden", "label": "Gulf of Aden",     "lat": (10.0, 14.0), "lon": (42.0, 52.0)},
+        {"id": "arabian_sea",  "label": "Arabian Sea",      "lat": (10.0, 25.0), "lon": (55.0, 70.0)},
+    ]
+
+    def _spoof_region(lat, lon):
+        if lat is None or lon is None:
+            return "ME_MARITIME", "ME Maritime"
+        for r in AIS_REGIONS:
+            if r["lat"][0] <= lat <= r["lat"][1] and r["lon"][0] <= lon <= r["lon"][1]:
+                return r["id"], r["label"]
+        return "ME_MARITIME", "ME Maritime"
+
+    try:
+        rows = ais_conn.execute("""
+            SELECT mmsi, vessel_name, lat, lon, anomaly_type, detail, detected_at
+            FROM spoofing_events
+            WHERE detected_at > ?
+            ORDER BY detected_at DESC
+        """, (_cutoff(),)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    if not rows:
+        return []
+
+    from collections import defaultdict
+    by_region = defaultdict(list)
+    for mmsi, name, lat, lon, atype, detail, detected_at in rows:
+        rid, rlabel = _spoof_region(lat, lon)
+        by_region[(rid, rlabel)].append(detected_at)
+
+    signals = []
+    for (rid, rlabel), timestamps in by_region.items():
+        count       = len(timestamps)
+        most_recent = max(timestamps)
+        first       = min(timestamps)
+
+        if count >= 5:
+            sev_key  = "ais_spoofing_high"
+            severity = "HIGH"
+        elif count >= 2:
+            sev_key  = "ais_spoofing_medium"
+            severity = "MEDIUM"
+        else:
+            sev_key  = "ais_spoofing_low"
+            severity = "LOW"
+
+        s0    = S0.get(sev_key, S0["ais_spoofing_medium"])
+        score = event_score(s0, "ais_spoofing", most_recent)
+        if score < 0.01:
+            continue
+
+        signals.append({
+            "type":              "ais_spoofing",
+            "signal_class":      "event",
+            "category":          "maritime",
+            "track":             "escalation",
+            "region":            rid,
+            "region_label":      rlabel,
+            "s0":                s0,
+            "score":             score,
+            "first_detected_at": first,
+            "last_confirmed_at": most_recent,
+            "resolved_at":       None,
+            "severity":          severity,
+            "detail":            f"{count} spoofing event(s) in window",
+        })
+
+    return signals
+
+
 def read_gdelt_signals(gdelt_conn):
     """
     GDELT Goldstein average signal.
@@ -654,8 +765,12 @@ def read_gdelt_signals(gdelt_conn):
     today      = datetime.now(timezone.utc)
     win_start  = (today - timedelta(days=30)).strftime("%Y%m%d")
     win_end    = today.strftime("%Y%m%d")
-    base_start = (today - timedelta(days=90)).strftime("%Y%m%d")
-    base_end   = (today - timedelta(days=31)).strftime("%Y%m%d")
+    # Baseline sits at days 91–270 (≈3–9 months ago).
+    # Starting at day 91 — not day 31 — means a sustained 3-month escalation cannot
+    # contaminate the baseline and cause the delta to silently shrink toward zero.
+    # The GDELT DB covers Jan 2023 onward, so this window is always populated.
+    base_start = (today - timedelta(days=270)).strftime("%Y%m%d")
+    base_end   = (today - timedelta(days=91)).strftime("%Y%m%d")
 
     DELTA_FLOOR = 0.30   # minimum delta to fire (below this = normal variation)
 
@@ -696,7 +811,7 @@ def read_gdelt_signals(gdelt_conn):
                 "first_detected_at": win_start,
                 "last_confirmed_at": now_str,
                 "resolved_at":      None,
-                "detail": (f"avg_30d={avg_win:.3f}  baseline={avg_base:.3f}  "
+                "detail": (f"avg_30d={avg_win:.3f}  baseline(91-270d)={avg_base:.3f}  "
                            f"Δ={delta:+.3f}  n={count_win:,}"),
             })
 
@@ -714,7 +829,7 @@ def read_gdelt_signals(gdelt_conn):
                 "first_detected_at": win_start,
                 "last_confirmed_at": now_str,
                 "resolved_at":      None,
-                "detail": (f"avg_30d={avg_win:.3f}  baseline={avg_base:.3f}  "
+                "detail": (f"avg_30d={avg_win:.3f}  baseline(91-270d)={avg_base:.3f}  "
                            f"Δ={delta:+.3f}  n={count_win:,}"),
             })
 
@@ -725,13 +840,107 @@ def read_gdelt_signals(gdelt_conn):
         return []
 
 
+# ── Region → coherence zone mapping ────────────────────────────────────────────
+# Maps the heterogeneous region strings used by each signal layer onto a common
+# set of macro-zones so the coherence check can fire across layers.
+#
+# "ME" is a wildcard zone — signals in this zone (GDELT, going-dark) can cohere
+# with any zone that already has a qualifying physical signal, but they cannot
+# trigger coherence on their own (prevents GDELT alone from earning the bonus).
+
+_ZONE_MAP = {
+    # ADS-B traffic region labels
+    "Israel / Palestine":   "LEVANT",
+    "Lebanon / Syria":      "LEVANT",
+    "Jordan":               "LEVANT",
+    "Egypt / Sinai":        "EGYPT",
+    "Iran":                 "IRAN",
+    "Yemen / Red Sea":      "YEMEN_RED_SEA",
+    "Persian Gulf / Qatar": "GULF",
+    "Saudi Arabia":         "SAUDI",
+    "Turkey":               "TURKEY",
+    # AIS region IDs
+    "persian_gulf":         "GULF",
+    "hormuz":               "GULF",
+    "red_sea":              "YEMEN_RED_SEA",
+    "gulf_of_aden":         "YEMEN_RED_SEA",
+    "arabian_sea":          "GULF",
+    "ME_MARITIME":          "ME",
+    # NOTAM FIR codes
+    "LLLL": "LEVANT",        # Israel
+    "OLBB": "LEVANT",        # Lebanon
+    "OSTT": "LEVANT",        # Syria
+    "OJAI": "LEVANT",        # Jordan
+    "LCCC": "LEVANT",        # Cyprus
+    "OIIX": "IRAN",          # Iran Tehran
+    "OIFM": "IRAN",          # Iran Esfahan
+    "OMAE": "GULF",          # UAE
+    "OTDF": "GULF",          # Qatar
+    "OBBB": "GULF",          # Bahrain
+    "OKAC": "GULF",          # Kuwait
+    "OOMM": "GULF",          # Oman
+    "ORBB": "IRAQ",          # Iraq
+    "OEJD": "SAUDI",         # Saudi Jeddah
+    "OERK": "SAUDI",         # Saudi Riyadh
+    "HECC": "EGYPT",         # Egypt Cairo
+    "HECA": "EGYPT",         # Egypt Cairo ACC
+    "HESH": "EGYPT",         # Egypt Sharm el-Sheikh
+    "OYSC": "YEMEN_RED_SEA", # Yemen
+    # Broad / global
+    "ME":     "ME",
+    "GLOBAL": "ME",
+}
+
+# Two-letter ICAO prefix → zone (catches airport codes in bizjet_cluster signals
+# and any FIR codes not listed above)
+_ICAO_PREFIX_ZONES = {
+    "LL": "LEVANT",       # Israel
+    "OL": "LEVANT",       # Lebanon
+    "OS": "LEVANT",       # Syria
+    "OJ": "LEVANT",       # Jordan
+    "LC": "LEVANT",       # Cyprus
+    "OI": "IRAN",
+    "OM": "GULF",         # UAE
+    "OT": "GULF",         # Qatar
+    "OB": "GULF",         # Bahrain
+    "OK": "GULF",         # Kuwait
+    "OO": "GULF",         # Oman
+    "OE": "SAUDI",
+    "OR": "IRAQ",
+    "HE": "EGYPT",
+    "OY": "YEMEN_RED_SEA",
+    "LT": "TURKEY",
+}
+
+
+def _coherence_zone(region):
+    """Map a raw signal region string to a macro coherence zone."""
+    zone = _ZONE_MAP.get(region)
+    if zone:
+        return zone
+    # Try 2-char ICAO prefix (catches 4-char airport ICAO codes not in _ZONE_MAP)
+    if len(region) >= 2:
+        zone = _ICAO_PREFIX_ZONES.get(region[:2].upper())
+        if zone:
+            return zone
+    return "ME"   # fallback: treat as broad ME signal
+
+
 # ── Scoring ────────────────────────────────────────────────────────────────────
 
 def calculate_scores(signals):
     """
     Sum decayed signal scores by track.
-    Apply coherence multiplier (1.5×) per region where:
+    Apply coherence multiplier (1.5×) per coherence zone where:
       - 2+ signals from different categories both score > COHERENCE_FLOOR
+    Signals are normalised to macro zones via _coherence_zone() so that e.g. an
+    ADS-B traffic drop in "Persian Gulf / Qatar" and an AIS tanker surge in
+    "persian_gulf" both map to zone "GULF" and can cohere.
+
+    "ME" wildcard signals (GDELT, going-dark) can participate in any zone that
+    already has a qualifying physical signal, but cannot trigger coherence alone —
+    this prevents GDELT from earning a bonus when there's no physical corroboration.
+
     Returns (escalation_raw, deescalation_raw, coherence_events).
     """
     esc_total   = 0.0
@@ -746,26 +955,43 @@ def calculate_scores(signals):
     for s in deesc_signals:
         deesc_total += s["score"]
 
-    # Coherence multiplier — group escalation signals by region
+    # Coherence multiplier — group escalation signals by coherence zone
     coherence_events = []
     from collections import defaultdict
-    by_region = defaultdict(list)
-    for s in esc_signals:
-        by_region[s["region"]].append(s)
+
+    # Split ME-wildcard signals from zone-specific signals
+    me_qualifying   = [s for s in esc_signals
+                       if _coherence_zone(s["region"]) == "ME" and s["score"] > COHERENCE_FLOOR]
+    zonal_signals   = [s for s in esc_signals if _coherence_zone(s["region"]) != "ME"]
+
+    by_zone = defaultdict(list)
+    for s in zonal_signals:
+        by_zone[_coherence_zone(s["region"])].append(s)
+
+    # Inject ME wildcards into every zone that has at least one qualifying zonal signal.
+    # They contribute their category to the coherence check but NOT to the bonus score
+    # (they are already counted in esc_total).
+    for zone, zone_sigs in by_zone.items():
+        has_qualifying_zonal = any(s["score"] > COHERENCE_FLOOR for s in zone_sigs)
+        if has_qualifying_zonal and me_qualifying:
+            by_zone[zone] = zone_sigs + me_qualifying
 
     bonus = 0.0
-    for region, region_signals in by_region.items():
-        qualifying = [s for s in region_signals if s["score"] > COHERENCE_FLOOR]
-        categories = {s["category"] for s in qualifying}
+    for zone, zone_signals in by_zone.items():
+        qualifying  = [s for s in zone_signals if s["score"] > COHERENCE_FLOOR]
+        categories  = {s["category"] for s in qualifying}
         if len(categories) >= 2:
-            region_score = sum(s["score"] for s in qualifying)
-            region_bonus = region_score * 0.5  # 1.5× = original + 0.5×
-            bonus += region_bonus
+            # Bonus is applied only to zone-specific signal scores to avoid
+            # double-counting ME signals that are already in esc_total
+            zonal_qualifying = [s for s in qualifying if _coherence_zone(s["region"]) != "ME"]
+            zone_score  = sum(s["score"] for s in zonal_qualifying)
+            zone_bonus  = zone_score * 0.5   # 1.5× = original + 0.5×
+            bonus += zone_bonus
             coherence_events.append({
-                "region": region,
-                "categories": sorted(categories),
+                "region":             zone,
+                "categories":         sorted(categories),
                 "qualifying_signals": len(qualifying),
-                "bonus": round(region_bonus, 2),
+                "bonus":              round(zone_bonus, 2),
             })
 
     esc_total += bonus
@@ -791,27 +1017,67 @@ def init_engine_db():
     conn = sqlite3.connect(ENGINE_DB)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS scores (
-            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-            computed_at        TEXT NOT NULL,
-            escalation_raw     REAL,
-            deescalation_raw   REAL,
-            escalation_prob    REAL,
-            deescalation_prob  REAL,
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            computed_at         TEXT NOT NULL,
+            escalation_raw      REAL,
+            deescalation_raw    REAL,
+            escalation_prob     REAL,
+            deescalation_prob   REAL,
             active_signal_count INTEGER,
-            coherence_events   TEXT,   -- JSON
-            divergence_flag    TEXT,
-            dominant_signals   TEXT    -- JSON: top 5 signals by score
+            coherence_events    TEXT,   -- JSON
+            divergence_flag     TEXT,
+            dominant_signals    TEXT,   -- JSON: top 5 signals by score
+            velocity_24h        REAL,   -- raw score change vs 24h ago
+            velocity_bonus      REAL    -- extra points added to prob calculation
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_scores_time ON scores(computed_at)")
+    # Migrate existing DBs that predate the velocity columns
+    for col_def in ["velocity_24h REAL", "velocity_bonus REAL"]:
+        try:
+            conn.execute(f"ALTER TABLE scores ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     return conn
 
 
-def save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, divergence):
-    now         = datetime.now(timezone.utc).isoformat()
-    esc_prob    = to_probability(esc_raw)
-    deesc_prob  = to_probability(deesc_raw)
+def compute_velocity(engine_conn, current_raw):
+    """
+    Compare the current escalation raw score against the score from ~24h ago.
+
+    Returns (velocity_24h, velocity_bonus):
+      velocity_24h  — signed rate of change (positive = rising, negative = falling)
+      velocity_bonus — extra score added before sigmoid normalisation (only for rising scores)
+
+    A ±2h search window around the 24h lookback handles gaps in polling (e.g. restarts).
+    Returns (0.0, 0.0) when insufficient history exists.
+    """
+    lo = (datetime.now(timezone.utc) - timedelta(hours=VELOCITY_LOOKBACK_H + 2)).isoformat()
+    hi = (datetime.now(timezone.utc) - timedelta(hours=VELOCITY_LOOKBACK_H - 2)).isoformat()
+
+    row = engine_conn.execute("""
+        SELECT escalation_raw FROM scores
+        WHERE computed_at BETWEEN ? AND ?
+        ORDER BY computed_at DESC
+        LIMIT 1
+    """, (lo, hi)).fetchone()
+
+    if row is None:
+        return 0.0, 0.0
+
+    velocity_24h  = current_raw - row[0]
+    velocity_bonus = min(max(0.0, velocity_24h) * VELOCITY_WEIGHT, VELOCITY_MAX_BONUS)
+    return round(velocity_24h, 3), round(velocity_bonus, 3)
+
+
+def save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, divergence,
+               velocity_24h=0.0, velocity_bonus=0.0):
+    now        = datetime.now(timezone.utc).isoformat()
+    # Probability uses the velocity-adjusted score; raw score stored separately
+    # so historical trend charts remain comparable (no velocity inflation of raw)
+    esc_prob   = to_probability(esc_raw + velocity_bonus)
+    deesc_prob = to_probability(deesc_raw)
 
     top5 = sorted(signals, key=lambda s: s["score"], reverse=True)[:5]
     top5_json = json.dumps([{
@@ -825,8 +1091,9 @@ def save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, diver
         INSERT INTO scores
             (computed_at, escalation_raw, deescalation_raw,
              escalation_prob, deescalation_prob, active_signal_count,
-             coherence_events, divergence_flag, dominant_signals)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             coherence_events, divergence_flag, dominant_signals,
+             velocity_24h, velocity_bonus)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         now,
         round(esc_raw, 3),
@@ -837,6 +1104,8 @@ def save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, diver
         json.dumps(coherence_events),
         divergence,
         top5_json,
+        velocity_24h,
+        velocity_bonus,
     ))
     engine_conn.commit()
 
@@ -872,6 +1141,7 @@ def compute(verbose=True):
 
     if ais_conn:
         signals += read_ais_anomalies(ais_conn)
+        signals += read_spoofing_events(ais_conn)
         ais_conn.close()
 
     if gdelt_conn:
@@ -879,10 +1149,14 @@ def compute(verbose=True):
         gdelt_conn.close()
 
     esc_raw, deesc_raw, coherence_events, divergence = calculate_scores(signals)
-    esc_prob  = to_probability(esc_raw)
+
+    # Velocity: compare to 24h ago, add bonus for rising scores before normalising
+    velocity_24h, velocity_bonus = compute_velocity(engine_conn, esc_raw)
+    esc_prob   = to_probability(esc_raw + velocity_bonus)
     deesc_prob = to_probability(deesc_raw)
 
-    save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, divergence)
+    save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, divergence,
+               velocity_24h, velocity_bonus)
     engine_conn.close()
 
     if verbose:
@@ -892,6 +1166,9 @@ def compute(verbose=True):
         print(f"  Active signals:      {len(signals)}")
         print(f"  Escalation raw:      {esc_raw:.2f}")
         print(f"  De-escalation raw:   {deesc_raw:.2f}")
+        if velocity_24h != 0.0:
+            direction = "↑" if velocity_24h > 0 else "↓"
+            print(f"  Velocity (24h):      {velocity_24h:+.2f}  {direction}  bonus={velocity_bonus:.2f}")
         print(f"  Escalation prob:     {esc_prob*100:.1f}%  ⚠ UNCALIBRATED")
         print(f"  De-escalation prob:  {deesc_prob*100:.1f}%  ⚠ UNCALIBRATED")
         if coherence_events:
@@ -907,7 +1184,7 @@ def compute(verbose=True):
             for s in top5:
                 print(f"    [{s['track'][:3].upper()}] {s['type']:<22} {s['region']:<12} score={s['score']:.2f}")
 
-    return esc_raw, deesc_raw, esc_prob, deesc_prob, signals
+    return esc_raw, deesc_raw, esc_prob, deesc_prob, signals, velocity_24h, velocity_bonus
 
 
 def print_status():

@@ -11,6 +11,9 @@ import pandas as pd
 import sqlite3
 import json
 from datetime import datetime, timedelta, timezone
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.styles import inject_css, page_header, plotly_layout, axis_style
 
 VIP_CSV = "VIP Aircraft.csv"
 
@@ -19,6 +22,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+inject_css()
 
 DB_PATH = "adsb_events.db"
 
@@ -177,24 +181,19 @@ def chart_type_timeseries(df, selected_regions, selected_categories):
                 marker=dict(size=5),
                 hovertemplate=f"{region} / {cat}<br>%{{x|%H:%M}}<br>Count: %{{y}}<extra></extra>",
             ))
-    fig.update_layout(
-        template="plotly_dark",
+    fig.update_layout(**plotly_layout(
         height=360,
-        margin=dict(l=0, r=0, t=10, b=0),
-        legend=dict(orientation="h", y=1.12, font=dict(size=11)),
-        hovermode="x unified",
-        yaxis=dict(title="Aircraft count", gridcolor="rgba(255,255,255,0.05)", dtick=1),
-        xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-    )
+        yaxis=dict(title="Aircraft count", dtick=1, **axis_style()),
+        xaxis=axis_style(),
+    ))
     return fig
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-st.markdown("## Strategic Aircraft Monitor")
-st.caption(
-    "VIP tail number tracking (Mode A) + strategic type clustering (Mode B) — "
-    "requires `adsb_collector.py --loop` running"
+page_header(
+    "Strategic Monitor",
+    "VIP tail number tracking (Mode A) + strategic type clustering (Mode B)",
 )
 
 try:

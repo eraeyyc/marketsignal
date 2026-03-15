@@ -20,10 +20,14 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-ENGINE_DB = "convergence_engine.db"
-
-# Add project root to path so we can import convergence_engine
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.styles import inject_css, page_header, plotly_layout, axis_style
+inject_css()
+
+ENGINE_DB = "convergence_engine.db"
+POLY_DB   = "polymarket_markets.db"
+
+# Add project root to path so we can import convergence_engine (already done above)
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
@@ -40,7 +44,9 @@ def load_latest_score():
                 SELECT computed_at, escalation_raw, deescalation_raw,
                        escalation_prob, deescalation_prob,
                        active_signal_count, coherence_events,
-                       divergence_flag, dominant_signals
+                       divergence_flag, dominant_signals,
+                       COALESCE(velocity_24h, 0.0),
+                       COALESCE(velocity_bonus, 0.0)
                 FROM scores
                 ORDER BY computed_at DESC
                 LIMIT 1
@@ -57,7 +63,9 @@ def load_score_history(hours=72):
         with _conn() as conn:
             df = pd.read_sql_query("""
                 SELECT computed_at, escalation_raw, deescalation_raw,
-                       escalation_prob, deescalation_prob, active_signal_count
+                       escalation_prob, deescalation_prob, active_signal_count,
+                       COALESCE(velocity_24h, 0.0) AS velocity_24h,
+                       COALESCE(velocity_bonus, 0.0) AS velocity_bonus
                 FROM scores
                 WHERE computed_at >= ?
                 ORDER BY computed_at ASC
@@ -74,9 +82,37 @@ def load_live_signals():
     """Run compute() to get full active signal list. Cached 10 min."""
     try:
         import convergence_engine as ce
-        _, _, _, _, signals = ce.compute(verbose=False)
+        _, _, _, _, signals, _, _ = ce.compute(verbose=False)
         return signals
     except Exception as e:
+        return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_polymarket_markets():
+    """Returns DataFrame of active ME markets from polymarket_markets.db."""
+    try:
+        with sqlite3.connect(POLY_DB) as conn:
+            df = pd.read_sql_query("""
+                SELECT question, slug, yes_price, no_price,
+                       volume, signal_track, end_date, last_updated
+                FROM markets
+                WHERE active = 1
+                ORDER BY volume DESC
+            """, conn)
+        return df
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_polymarket_last_polled():
+    """Returns ISO string of most recent last_updated, or None."""
+    try:
+        with sqlite3.connect(POLY_DB) as conn:
+            row = conn.execute("SELECT MAX(last_updated) FROM markets").fetchone()
+        return row[0] if row else None
+    except Exception:
         return None
 
 
@@ -121,16 +157,11 @@ def chart_score_history(df):
 
     fig.add_hline(y=50, line_dash="dot", line_color="rgba(255,255,255,0.2)", secondary_y=False)
 
-    fig.update_layout(
-        template="plotly_dark",
+    fig.update_layout(**plotly_layout(
         height=320,
-        margin=dict(l=0, r=0, t=10, b=0),
-        legend=dict(orientation="h", y=1.12),
-        hovermode="x unified",
-        yaxis=dict(title="Probability %", range=[0, 100],
-                   gridcolor="rgba(255,255,255,0.05)"),
-        yaxis2=dict(title="Signal count", gridcolor="rgba(0,0,0,0)"),
-    )
+        yaxis=dict(title="Probability %", range=[0, 100], **axis_style()),
+        yaxis2=dict(title="Signal count", gridcolor="rgba(0,0,0,0)", **axis_style()),
+    ))
     return fig
 
 
@@ -154,14 +185,49 @@ def chart_raw_scores(df):
         fillcolor="rgba(34,197,94,0.1)",
         hovertemplate="%{x|%H:%M}<br>Raw score: %{y:.2f}<extra></extra>",
     ))
-    fig.update_layout(
-        template="plotly_dark",
+    fig.update_layout(**plotly_layout(
         height=220,
-        margin=dict(l=0, r=0, t=10, b=0),
-        legend=dict(orientation="h", y=1.12),
-        hovermode="x unified",
-        yaxis=dict(title="Raw score", gridcolor="rgba(255,255,255,0.05)"),
-        xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(title="Raw score", **axis_style()),
+        xaxis=axis_style(),
+    ))
+    return fig
+
+
+def chart_probability_gauge(esc_pct, deesc_pct):
+    """Horizontal bar chart showing escalation vs de-escalation probability."""
+    esc_color = "#ef4444" if esc_pct > 60 else "#f97316" if esc_pct > 40 else "#94a3b8"
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name="De-escalation",
+        x=[deesc_pct], y=["De-escalation"],
+        orientation="h",
+        marker=dict(color="#22c55e", opacity=0.85),
+        width=0.45,
+        hovertemplate="De-escalation: %{x:.1f}%<extra></extra>",
+    ))
+    fig.add_trace(go.Bar(
+        name="Escalation",
+        x=[esc_pct], y=["Escalation"],
+        orientation="h",
+        marker=dict(color=esc_color, opacity=0.85),
+        width=0.45,
+        hovertemplate="Escalation: %{x:.1f}%<extra></extra>",
+    ))
+    fig.add_vline(x=50, line_dash="dot", line_color="rgba(255,255,255,0.2)", line_width=1)
+    fig.update_layout(
+        **plotly_layout(height=130),
+        xaxis=dict(range=[0, 100], ticksuffix="%", **axis_style()),
+        yaxis=axis_style(),
+        barmode="group",
+        showlegend=False,
+        annotations=[
+            dict(x=min(esc_pct + 1, 99), y="Escalation",
+                 text=f"<b>{esc_pct}%</b>", showarrow=False,
+                 xanchor="left", font=dict(color=esc_color, size=14)),
+            dict(x=min(deesc_pct + 1, 99), y="De-escalation",
+                 text=f"<b>{deesc_pct}%</b>", showarrow=False,
+                 xanchor="left", font=dict(color="#22c55e", size=14)),
+        ],
     )
     return fig
 
@@ -176,6 +242,7 @@ SIGNAL_TYPE_LABELS = {
     "route_suspension":   "Route Suspension",
     "ais_anomaly":        "Maritime Density Anomaly",
     "ais_watchlist":      "Maritime Watchlist Vessel",
+    "ais_spoofing":       "GPS Spoofing / AIS Jamming",
     "gdelt_escalation":   "GDELT Escalation",
     "gdelt_deescalation": "GDELT De-escalation",
 }
@@ -193,8 +260,10 @@ TRACK_COLORS = {
 
 # ── Page ───────────────────────────────────────────────────────────────────────
 
-st.markdown("## Convergence Engine")
-st.caption("Aggregated escalation / de-escalation score across all signal layers")
+page_header(
+    "Convergence Engine",
+    "Aggregated escalation / de-escalation score across all signal layers",
+)
 
 # Check DB
 if not os.path.exists(ENGINE_DB):
@@ -209,12 +278,12 @@ if not latest:
     st.stop()
 
 computed_at, esc_raw, deesc_raw, esc_prob, deesc_prob, sig_count, \
-    coherence_json, divergence_flag, dominant_json = latest
+    coherence_json, divergence_flag, dominant_json, velocity_24h, velocity_bonus = latest
 
 computed_str = computed_at[:16] if computed_at else "—"
 now_str      = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-st.caption(f"Last computed: {computed_str} UTC  |  Page loaded: {now_str}  |  {total_scores:,} scores in DB")
+st.caption(f"Last computed: {computed_str} UTC  ·  {total_scores:,} scores in DB")
 
 if st.button("Refresh", use_container_width=False):
     st.cache_data.clear()
@@ -230,39 +299,154 @@ st.divider()
 st.subheader("Current Score")
 st.caption("⚠ UNCALIBRATED — probabilities are placeholder until GDELT back-test is complete")
 
-p1, p2, p3, p4 = st.columns(4)
+p1, p2, p3, p4, p5 = st.columns(5)
 
 esc_pct   = round(esc_prob * 100, 1)
 deesc_pct = round(deesc_prob * 100, 1)
 
+velocity_arrow = "↑" if velocity_24h > 0 else ("↓" if velocity_24h < 0 else "→")
+velocity_delta = f"{velocity_24h:+.1f} pts" if velocity_24h != 0 else "no history"
+
 p1.metric("Escalation probability",    f"{esc_pct}%",
-          help="Sigmoid-normalised. Meaningless until β is calibrated via back-test.")
+          help="Sigmoid-normalised using velocity-adjusted score. Meaningless until β is calibrated via back-test.")
 p2.metric("De-escalation probability", f"{deesc_pct}%",
           help="Sigmoid-normalised. Meaningless until β is calibrated via back-test.")
 p3.metric("Escalation raw score",      f"{esc_raw:.2f}",
-          help="Sum of all decayed escalation signal weights.")
-p4.metric("Active signals",            sig_count,
+          help="Sum of all decayed escalation signal weights (pre-velocity).")
+p4.metric("Velocity (24h)",            f"{velocity_arrow} {velocity_delta}",
+          help=f"Score change vs 24h ago. Velocity bonus applied to probability: +{velocity_bonus:.2f} pts. "
+               f"Rising scores get up to {30:.0f} pts bonus (VELOCITY_WEIGHT=0.30).")
+p5.metric("Active signals",            sig_count,
           help="Number of signals with score > 0.01 in the 30-day window.")
 
-# Visual probability bars
-col_esc, col_deesc = st.columns(2)
-with col_esc:
-    bar_color = "#ef4444" if esc_pct > 60 else "#f97316" if esc_pct > 40 else "#94a3b8"
-    st.markdown(
-        f'<div style="background:rgba(255,255,255,0.05);border-radius:6px;overflow:hidden;height:28px">'
-        f'<div style="width:{esc_pct}%;background:{bar_color};height:100%;'
-        f'display:flex;align-items:center;padding-left:10px;font-weight:600;font-size:13px">'
-        f'Escalation {esc_pct}%</div></div>',
-        unsafe_allow_html=True,
-    )
-with col_deesc:
-    st.markdown(
-        f'<div style="background:rgba(255,255,255,0.05);border-radius:6px;overflow:hidden;height:28px">'
-        f'<div style="width:{deesc_pct}%;background:#22c55e;height:100%;'
-        f'display:flex;align-items:center;padding-left:10px;font-weight:600;font-size:13px">'
-        f'De-escalation {deesc_pct}%</div></div>',
-        unsafe_allow_html=True,
-    )
+st.plotly_chart(chart_probability_gauge(esc_pct, deesc_pct), use_container_width=True)
+
+st.divider()
+
+# ── Polymarket: ME Markets ──────────────────────────────────────────────────────
+st.subheader("Polymarket: ME Markets")
+
+if not os.path.exists(POLY_DB):
+    st.info("Run `python3 polymarket_collector.py --loop` to track Polymarket ME markets.")
+else:
+    last_polled = load_polymarket_last_polled()
+    poly_df     = load_polymarket_markets()
+
+    # Staleness check
+    if last_polled:
+        try:
+            lp_dt   = datetime.fromisoformat(last_polled.replace("Z", "+00:00"))
+            if lp_dt.tzinfo is None:
+                lp_dt = lp_dt.replace(tzinfo=timezone.utc)
+            age_min = (datetime.now(timezone.utc) - lp_dt).total_seconds() / 60
+            age_str = f"{int(age_min)} min ago" if age_min < 90 else f"{age_min/60:.1f}h ago"
+        except Exception:
+            age_min, age_str = 999, "unknown"
+    else:
+        age_min, age_str = 999, "unknown"
+
+    n_markets = len(poly_df) if poly_df is not None else 0
+    st.caption(f"Last polled: {age_str}  ·  {n_markets} markets tracked")
+
+    if age_min > 30:
+        st.warning("Market prices may be stale — collector may be down (last update > 30 min ago)")
+
+    if poly_df is None or poly_df.empty:
+        st.info("No active ME markets in DB. Run collector to populate.")
+    else:
+        now_utc = datetime.now(timezone.utc)
+
+        def _days_to_expiry(end_date_str):
+            if not end_date_str:
+                return None
+            try:
+                dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                days = (dt - now_utc).days
+                return max(days, 0)
+            except Exception:
+                return None
+
+        def _model_pct(track):
+            if track == "deescalation":
+                return round(deesc_prob * 100, 1)
+            return round(esc_prob * 100, 1)
+
+        rows = []
+        for _, r in poly_df.iterrows():
+            yes_pct   = round(r["yes_price"] * 100, 1) if r["yes_price"] is not None else None
+            model_pct = _model_pct(r["signal_track"])
+            if yes_pct is not None:
+                edge = round((model_pct - yes_pct), 1)
+                bet  = "Yes" if edge >= 2 else ("No" if edge <= -2 else "—")
+            else:
+                edge, bet = None, "—"
+
+            days_left = _days_to_expiry(r["end_date"])
+            vol = r["volume"] or 0
+            vol_str = f"${vol/1e6:.1f}M" if vol >= 1e6 else f"${vol/1e3:.0f}K"
+
+            url = f"https://polymarket.com/event/{r['slug']}" if r["slug"] else ""
+            rows.append({
+                "Market":  url or r["question"],
+                "Track":   "De-esc" if r["signal_track"] == "deescalation" else "Esc",
+                "Yes%":    yes_pct,
+                "Model%":  model_pct,
+                "Edge":    edge,
+                "Bet":     bet,
+                "Volume":  vol_str,
+                "Expires": f"{days_left}d" if days_left is not None else "—",
+            })
+
+        display_df = pd.DataFrame(rows)
+
+        def _style_edge(val):
+            """Color edge cells by absolute magnitude (applied to numeric Edge column)."""
+            try:
+                abs_e = abs(float(val))
+            except (TypeError, ValueError):
+                return "color: #475569"
+            if abs_e > 10:
+                return "color: #22c55e; font-weight: 700"
+            elif abs_e > 2:
+                return "color: #86efac"
+            return "color: #475569"
+
+        show_cols = ["Market", "Track", "Yes%", "Model%", "Edge", "Bet", "Volume", "Expires"]
+        styled = (
+            display_df[show_cols]
+            .style
+            .applymap(_style_edge, subset=["Edge"])
+            .format({"Edge": lambda v: f"{v:+.1f}%" if v is not None else "—"})
+        )
+
+        st.dataframe(
+            styled,
+            column_config={
+                "Market": st.column_config.LinkColumn(
+                    "Market",
+                    display_text=r"https://polymarket\.com/event/(.+)",
+                    help="Click to open on Polymarket",
+                ),
+                "Track":  st.column_config.TextColumn("Track",   width="small"),
+                "Yes%":   st.column_config.NumberColumn("Yes%",  format="%.1f%%", width="small"),
+                "Model%": st.column_config.NumberColumn("Model%",format="%.1f%%", width="small"),
+                "Edge":   st.column_config.TextColumn("Edge",    width="small"),
+                "Bet":    st.column_config.TextColumn("Bet",     width="small"),
+                "Volume": st.column_config.TextColumn("Volume",  width="small"),
+                "Expires":st.column_config.TextColumn("Expires", width="small"),
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        st.caption(
+            "Edge = Model% − Yes%.  "
+            "Green >10% = meaningful alpha.  "
+            "Positive edge → bet Yes; negative → bet No.  "
+            "Model% uses escalation prob for Esc markets, de-escalation prob for De-esc markets."
+        )
 
 st.divider()
 
@@ -376,7 +560,9 @@ except Exception:
 if not coherence:
     st.info(
         "Coherence multiplier (1.5×) not currently active. "
-        "Fires when 2+ signal categories both score >2.0 in the same region simultaneously."
+        "Fires when 2+ signal categories both score >2.0 in the same macro-zone "
+        "(GULF / LEVANT / IRAN / YEMEN_RED_SEA / EGYPT / SAUDI / IRAQ / TURKEY) simultaneously. "
+        "GDELT and going-dark signals act as wildcards that can contribute to any zone's coherence."
     )
 else:
     st.success(f"1.5× coherence multiplier active in {len(coherence)} region(s)")
@@ -413,9 +599,12 @@ up to a saturation ceiling of 2× S₀:
 
 Once the condition clears, it switches to exponential decay from the peak it reached.
 
-**Coherence bonus (1.5×):** if 2+ signal categories both score >2.0 in the same geographic
-region simultaneously, the regional subtotal gets a 50% bonus. One signal could be coincidence.
-Two independent signal types in the same place at the same time is harder to explain away.
+**Coherence bonus (1.5×):** if 2+ signal categories both score >2.0 in the same macro-zone
+(GULF, LEVANT, IRAN, YEMEN\_RED\_SEA, etc.) simultaneously, that zone's subtotal gets a 50% bonus.
+All signal layers — ADS-B, AIS, NOTAM, GDELT — are normalised to the same zone vocabulary first,
+so a tanker surge in "persian\_gulf" and a traffic drop in "Persian Gulf / Qatar" both map to GULF
+and can cohere. GDELT and going-dark signals act as wildcards: they can join any zone's coherence
+check, but cannot trigger the bonus on their own — physical corroboration is required.
 
 **Sigmoid normalisation:** the raw sum converts to 0–100% via:
 > P = 1 / (1 + e^(−0.08 × (score − 100)))

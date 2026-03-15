@@ -11,12 +11,16 @@ import plotly.graph_objects as go
 import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta, timezone
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.styles import inject_css, page_header, plotly_layout
 
 st.set_page_config(
     page_title="MarketSignal — NOTAM Monitor",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+inject_css()
 
 DB_PATH = "notam_events.db"
 
@@ -188,9 +192,7 @@ def chart_notam_map(df):
     ))
 
     fig.update_layout(
-        template="plotly_dark",
-        height=500,
-        margin=dict(l=0, r=0, t=10, b=0),
+        **plotly_layout(height=500),
         geo=dict(
             projection_type="mercator",
             center=dict(lat=27, lon=45),
@@ -212,8 +214,10 @@ def chart_notam_map(df):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-st.markdown("## NOTAM Monitor")
-st.caption("Middle East airspace notices via Laminar Data API — lat 10–45 N, lon 25–65 E")
+page_header(
+    "NOTAM Monitor",
+    "Middle East airspace notices — lat 10–45 N, lon 25–65 E",
+)
 
 # Check DB exists and has data
 try:

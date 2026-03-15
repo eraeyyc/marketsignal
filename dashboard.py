@@ -8,7 +8,10 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 import sqlite3
+import os
 from datetime import datetime, timezone, timedelta
+
+from utils.styles import inject_css, page_header, anomaly_card, status_strip, plotly_layout, axis_style
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -16,10 +19,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+inject_css()
 
-ADSB_DB   = "adsb_events.db"
-NOTAM_DB  = "notam_events.db"
-GDELT_DB  = "gdelt_events.db"
+ADSB_DB    = "adsb_events.db"
+NOTAM_DB   = "notam_events.db"
+GDELT_DB   = "gdelt_events.db"
+POLY_DB    = "polymarket_markets.db"
+ENGINE_DB  = "convergence_engine.db"
 
 CONFLICT_CODES = ("15", "16", "17", "18", "19", "20")
 COOP_CODES     = ("03", "04", "05", "06", "08")
@@ -235,6 +241,51 @@ def gdelt_summary_stats(days=30):
         return None
 
 
+# ── Polymarket data ────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_polymarket_top_edge():
+    """Returns (edge_str, question_short) for the largest |edge| opportunity."""
+    try:
+        if not os.path.exists(POLY_DB):
+            return None, None
+        # Model probabilities from convergence engine
+        try:
+            with _db(ENGINE_DB) as econn:
+                row = econn.execute("""
+                    SELECT escalation_prob, deescalation_prob FROM scores
+                    ORDER BY computed_at DESC LIMIT 1
+                """).fetchone()
+            esc_prob, deesc_prob = (row[0], row[1]) if row else (0.5, 0.5)
+        except Exception:
+            esc_prob, deesc_prob = 0.5, 0.5
+
+        with _db(POLY_DB) as conn:
+            rows = conn.execute("""
+                SELECT question, yes_price, signal_track
+                FROM markets WHERE active=1 AND yes_price IS NOT NULL
+            """).fetchall()
+
+        best_abs, best_signed, best_q = 0.0, 0.0, None
+        for question, yes_price, track in rows:
+            model_p = esc_prob if track == "escalation" else deesc_prob
+            signed  = model_p - yes_price
+            if abs(signed) > best_abs:
+                best_abs    = abs(signed)
+                best_signed = signed
+                best_q      = question
+
+        if best_q is None:
+            return None, None
+
+        sign    = "+" if best_signed >= 0 else ""
+        pct_str = f"{sign}{best_signed * 100:.1f}%"
+        q_short = (best_q[:30] + "…") if len(best_q) > 30 else best_q
+        return pct_str, q_short
+    except Exception:
+        return None, None
+
+
 # ── Charts ─────────────────────────────────────────────────────────────────────
 
 def chart_adsb_bar(rows):
@@ -252,12 +303,11 @@ def chart_adsb_bar(rows):
         marker_color=colors,
         hovertemplate="%{x}: %{y}<extra></extra>",
     ))
-    fig.update_layout(
-        template="plotly_dark", height=260,
-        margin=dict(l=0, r=0, t=6, b=0),
-        yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-        xaxis=dict(tickangle=-20),
-    )
+    fig.update_layout(**plotly_layout(
+        height=260,
+        xaxis=dict(tickangle=-20, **axis_style()),
+        yaxis=axis_style(),
+    ))
     return fig
 
 
@@ -287,14 +337,12 @@ def chart_gdelt_sparkline(df):
         hovertemplate="Goldstein: %{y:.2f}<extra></extra>",
     ))
     fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.2)", secondary_y=False)
-    fig.update_layout(
-        template="plotly_dark", height=200,
-        margin=dict(l=0, r=0, t=6, b=0),
-        legend=dict(orientation="h", y=1.12, font=dict(size=11)),
-        hovermode="x unified",
-        yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="Events/day"),
-        yaxis2=dict(overlaying="y", side="right", range=[-10,10], title="Goldstein"),
-    )
+    fig.update_layout(**plotly_layout(
+        height=200,
+        yaxis=dict(title="Events/day", **axis_style()),
+        yaxis2=dict(overlaying="y", side="right", range=[-10, 10],
+                    title="Goldstein", gridcolor="rgba(0,0,0,0)", **axis_style()),
+    ))
     return fig
 
 
@@ -306,12 +354,11 @@ def chart_notam_countries(df):
         marker_color="rgba(251,146,60,0.75)",
         hovertemplate="%{y}: %{x} restrictions<extra></extra>",
     ))
-    fig.update_layout(
-        template="plotly_dark", height=260,
-        margin=dict(l=0, r=0, t=6, b=0),
-        yaxis=dict(categoryorder="total ascending"),
-        xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-    )
+    fig.update_layout(**plotly_layout(
+        height=260,
+        yaxis=dict(categoryorder="total ascending", **axis_style()),
+        xaxis=axis_style(),
+    ))
     return fig
 
 
@@ -331,29 +378,15 @@ def build_unified_feed():
     return combined
 
 
-SEVERITY_COLORS = {
-    "HIGH":   "#ef4444",
-    "MEDIUM": "#f97316",
-    "LOW":    "#eab308",
-    "INFO":   "#94a3b8",
-}
-
-LAYER_COLORS = {
-    "ADS-B":    "#6366f1",
-    "Strategic":"#a855f7",
-    "NOTAM":    "#f97316",
-    "VIP":      "#06b6d4",
-    "VIP Dark": "#ef4444",
-}
-
-
 # ── Page ───────────────────────────────────────────────────────────────────────
-
-st.markdown("## MarketSignal — Signal Overview")
 
 adsb_ts = adsb_latest_ts()
 now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-st.caption(f"Page loaded: {now_str}  |  Last ADS-B poll: {adsb_ts or '—'} UTC")
+page_header(
+    "Signal Overview",
+    "Geopolitical signal monitoring for Polymarket trading — Middle East",
+    timestamp=f"Loaded {now_str}  ·  ADS-B {adsb_ts or '—'} UTC",
+)
 
 if st.button("Refresh", use_container_width=False):
     st.cache_data.clear()
@@ -361,11 +394,30 @@ if st.button("Refresh", use_container_width=False):
 
 st.divider()
 
+# ── Collector status strip ─────────────────────────────────────────────────────
+def _collector_status(ts_str, stale_minutes=30):
+    if ts_str is None:
+        return "offline"
+    try:
+        last = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        age  = (datetime.now(timezone.utc) - last).total_seconds() / 60
+        return "live" if age < stale_minutes else "stale"
+    except Exception:
+        return "offline"
+
 # ── Metrics row ────────────────────────────────────────────────────────────────
 rows_adsb     = adsb_current_counts()
 total_me_ac   = sum(r[1] for r in rows_adsb) if rows_adsb else None
 active_notams = notam_active_count()
 gdelt_stats   = gdelt_summary_stats(30)
+
+status_strip([
+    ("ADS-B",       _collector_status(adsb_ts, stale_minutes=30)),
+    ("NOTAM",       "live" if active_notams else "offline"),
+    ("GDELT",       "live" if gdelt_stats else "offline"),
+    ("Maritime",    "offline"),
+    ("Convergence", "offline"),
+])
 
 cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M")
 cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M")
@@ -384,7 +436,9 @@ try:
 except Exception:
     notam_anomaly_count = None
 
-m1, m2, m3, m4, m5, m6 = st.columns(6)
+top_edge, top_q = load_polymarket_top_edge()
+
+m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
 m1.metric("ME Aircraft", total_me_ac if total_me_ac is not None else "—",
           help="Total aircraft visible across all ME regions in latest snapshot")
 m2.metric("Active NOTAM Restrictions", active_notams if active_notams is not None else "—",
@@ -398,6 +452,8 @@ m5.metric("VIP Sightings (24h)", vip_sighting_count if vip_sighting_count is not
 m6.metric("GDELT Goldstein (30d)",
           f"{gdelt_stats['goldstein']:+.2f}" if gdelt_stats else "—",
           help="Average Goldstein scale last 30 days. Negative = conflict-skewed.")
+m7.metric("Top Poly Edge", top_edge or "—",
+          help=top_q or "Run polymarket_collector.py to track markets")
 
 st.divider()
 
@@ -413,25 +469,12 @@ with left:
         st.info("No anomalies detected yet. Collectors need a few days to build baselines.")
     else:
         for _, row in feed_df.iterrows():
-            sev   = row.get("severity", "INFO")
-            layer = row.get("layer", "")
-            sev_color   = SEVERITY_COLORS.get(sev, "#94a3b8")
-            layer_color = LAYER_COLORS.get(layer, "#94a3b8")
-
-            ts_raw = str(row["detected_at"])[:16]
-            loc    = str(row.get("location",""))
-            detail = str(row.get("detail",""))[:80]
-
-            st.markdown(
-                f'<div style="border-left:3px solid {sev_color};padding:6px 10px;'
-                f'margin-bottom:6px;background:rgba(255,255,255,0.03);border-radius:3px">'
-                f'<span style="color:{layer_color};font-size:11px;font-weight:600">{layer}</span>'
-                f'&nbsp;&nbsp;<span style="color:#94a3b8;font-size:11px">{ts_raw}</span>'
-                f'&nbsp;&nbsp;<span style="color:{sev_color};font-size:11px">{sev}</span><br>'
-                f'<span style="font-size:13px">{loc}</span><br>'
-                f'<span style="color:#94a3b8;font-size:12px">{detail}</span>'
-                f'</div>',
-                unsafe_allow_html=True,
+            anomaly_card(
+                layer=str(row.get("layer", "")),
+                timestamp=str(row["detected_at"])[:16],
+                severity=str(row.get("severity", "INFO")),
+                location=str(row.get("location", "")),
+                detail=str(row.get("detail", ""))[:80],
             )
 
 with right:

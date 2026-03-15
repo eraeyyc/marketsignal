@@ -10,6 +10,9 @@ from plotly.subplots import make_subplots
 import pandas as pd
 from google.cloud import bigquery
 from datetime import date
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.styles import inject_css, page_header, plotly_layout, axis_style
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -17,6 +20,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+inject_css()
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 CREDENTIALS_FILE = "gdelt_credentials.json"
@@ -181,16 +185,10 @@ def chart_timeline(df):
     )
     fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.25)", secondary_y=True)
 
-    fig.update_layout(
-        template="plotly_dark",
-        height=360,
-        margin=dict(l=0, r=0, t=10, b=0),
-        legend=dict(orientation="h", y=1.08),
-        hovermode="x unified",
-        bargap=0.1,
-    )
-    fig.update_yaxes(title_text="Events / day", secondary_y=False, gridcolor="rgba(255,255,255,0.05)")
-    fig.update_yaxes(title_text="Goldstein scale", secondary_y=True, range=[-10, 10], gridcolor="rgba(0,0,0,0)")
+    fig.update_layout(**plotly_layout(height=360, bargap=0.1))
+    fig.update_yaxes(title_text="Events / day", secondary_y=False, **axis_style())
+    fig.update_yaxes(title_text="Goldstein scale", secondary_y=True,
+                     range=[-10, 10], gridcolor="rgba(0,0,0,0)", **axis_style())
 
     return fig
 
@@ -209,13 +207,11 @@ def chart_breakdown(df):
         marker_color=colors,
         hovertemplate="%{y}: %{x:,}<extra></extra>",
     ))
-    fig.update_layout(
-        template="plotly_dark",
+    fig.update_layout(**plotly_layout(
         height=360,
-        margin=dict(l=0, r=0, t=10, b=0),
-        yaxis=dict(categoryorder="total ascending"),
-        xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-    )
+        yaxis=dict(categoryorder="total ascending", **axis_style()),
+        xaxis=axis_style(),
+    ))
     return fig
 
 
@@ -254,7 +250,7 @@ with st.sidebar:
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
-st.markdown("## GDELT Middle East Explorer")
+page_header("GDELT Explorer", "Middle East event volume and Goldstein scale via BigQuery")
 
 if run_btn:
     if end_date <= start_date:

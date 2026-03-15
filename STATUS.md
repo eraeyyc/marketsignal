@@ -1,5 +1,5 @@
 # MarketSignal — Project Status
-Last updated: 2026-03-15
+Last updated: 2026-03-15 (Stage 4 Phase 1 complete — Polymarket integration)
 
 ---
 
@@ -81,7 +81,7 @@ service quietly before governments announce closures.
 - Airport pairs monitored (both directions): TLV, AMM, BGW, KWI, BAH, DOH, DXB,
   AUH, MCT, IKA, THR, BEY, CAI, IST
 
-### Stage 3: Convergence Engine — DONE ✓ (AIS wired in 2026-03-15)
+### Stage 3: Convergence Engine — DONE ✓ (major overhaul 2026-03-15)
 Single scoring daemon that reads all signal tables and outputs escalation +
 de-escalation scores every 10 minutes.
 - `convergence_engine.py` — main daemon
@@ -92,21 +92,48 @@ de-escalation scores every 10 minutes.
   - ISR (`isr`) and command (`command`) category VIP aircraft use State logic —
     an E-11A BACN active for 12h is infrastructure, not a one-off event
 - **S_0 weights:** isr_high 20.0 | command_high 22.0 | going_dark 15.0 |
-  notam_high 5.0 | strategic_lift_high 16.0 | vip_sighting 5.0
-- **Lambda values (per day):** strategic_lift 0.03 | tanker 0.04 | ISR 0.06 |
-  bizjet 0.10 | route_suspension 0.12 | NOTAM 0.35 | going_dark 0.60
-- **Coherence multiplier** (1.5×): fires only when 2+ signals in same region both score > 2.0
+  notam_high 5.0 | strategic_lift_high 16.0 | vip_sighting 5.0 |
+  ais_spoofing_low 8.0 | ais_spoofing_medium 14.0 | ais_spoofing_high 20.0
+- **Lambda values (per day):** strategic_lift 0.03 | tanker 0.04 | ISR/command 0.06 |
+  bizjet 0.10 | route_suspension 0.12 | NOTAM 0.35 | going_dark 0.60 | ais_spoofing 0.20
+- **State decay uses signal-type lambda** (fixed 2026-03-15): resolved states now decay
+  at their own characteristic rate. Previously ALL resolved states used λ=0.35 (NOTAM rate).
+  Now: ISR/command λ=0.06 (intelligence requirement persists), going_dark λ=0.60
+  (reappearance closes window fast), route_suspension λ=0.12, NOTAM λ=0.35 unchanged.
+- **Coherence multiplier** (1.5×): fires when 2+ signal categories both score > 2.0
+  in the same macro-zone. Zones: GULF | LEVANT | IRAN | YEMEN_RED_SEA | EGYPT |
+  SAUDI | IRAQ | TURKEY | ME (wildcard).
+  Fixed 2026-03-15: previously grouped by raw region string — ADS-B "Persian Gulf / Qatar"
+  and AIS "persian_gulf" would never match. Now all layers normalise through `_coherence_zone()`
+  to shared macro-zones first. GDELT and going-dark signals are "ME wildcards" — they
+  participate in any zone that already has a qualifying physical signal, but cannot
+  trigger coherence alone (prevents GDELT earning a bonus with no physical corroboration).
+- **GPS spoofing signals wired in** (added 2026-03-15): `read_spoofing_events()` reads
+  `spoofing_events` table from `ais_events.db`. Groups events by maritime region (inline
+  lat/lon lookup — Hormuz matched before broader Persian Gulf box). Tiers S0 by cluster
+  size: 1 event=LOW (8pts), 2-4=MEDIUM (14pts), 5+=HIGH (20pts). λ=0.20/day (half-life
+  ~3.5 days). Previously the `spoofing_events` table had no signal path to the engine.
+- **GDELT baseline window fixed** (2026-03-15): baseline now uses days 91–270 (179-day
+  window, ~3–9 months ago) instead of days 31–90. The old adjacent baseline was
+  contaminated by recent escalation — a 60-day conflict would silently shrink the delta
+  toward zero. New baseline: even a 3-month sustained escalation cannot contaminate it.
+  Confirmed improvement: current delta -1.80 (was being partially masked by old baseline).
+- **Score velocity/acceleration** (added 2026-03-15): `compute_velocity()` compares
+  current raw score to score 24h ago (±2h window). Rising scores earn a velocity bonus
+  (= velocity_24h × 0.30, capped at 30pts). Probability is computed from the
+  velocity-adjusted score; `escalation_raw` stored in DB is always the unadjusted value
+  so historical chart comparisons stay valid. The `scores` table has new columns:
+  `velocity_24h` (signed rate of change) and `velocity_bonus` (extra pts applied).
+  DB migration handled automatically on startup (ALTER TABLE with try/except).
 - **Sigmoid normalisation** → 0–1 probability for Polymarket comparison; β=100
 - **Divergence detection:** flags when GDELT and physical signals contradict each other
-- **NOTAM signal fix (2026-03-15):** Cirium bounding box returns non-ME FIRs (Romania,
-  Russia, Greece, India). Added ME FIR whitelist (19 FIRs). Deduplicate by FIR not
-  notam_id — one signal per FIR, worst severity. Reduced notam_high 14→5, notam_medium 7→3.
-  Raised SIGMOID_BETA 30→100. Was producing P=100% from 195 spurious signals.
+- **NOTAM signal fix (2026-03-15):** ME FIR whitelist (19 FIRs). One signal per FIR,
+  worst severity. Reduced notam_high 14→5, notam_medium 7→3. Raised SIGMOID_BETA 30→100.
 - **⚠ S_0 weights are placeholders** — must be calibrated via GDELT back-test
-- **⚠ Sigmoid β=100 is a rough calibration** — refine after back-test
-- **AIS signals wired in:** tanker/cargo density drops + military surges + watchlist sightings
-  → S0: ais_tanker_medium 6.0 | ais_tanker_high 12.0 | ais_military_high 14.0 | ais_watchlist 8.0
-  → λ: ais_tanker 0.04/day | ais_military 0.06/day
+- **⚠ Sigmoid β=100 is a rough calibration** — refine after 6+ months live data
+- **⚠ VELOCITY_WEIGHT=0.30 and VELOCITY_MAX_BONUS=30 are initial estimates** — observe
+  live behaviour before tuning; the key question is whether velocity bonus fires too
+  eagerly on noise spikes vs. real acceleration
 - Run with: `python3 convergence_engine.py --loop`
 - Check signals: `python3 convergence_engine.py --signals`
 - Outputs to: `convergence_engine.db`
@@ -128,8 +155,10 @@ Run with: `streamlit run dashboard.py`
 - **Page 3:** NOTAM Monitor — active restrictions map, NOTAM feed with Q-code filter, anomaly log
 - **Page 4:** Strategic Monitor — VIP sightings, full watchlist expander (49 aircraft),
   going-dark events, type count timeseries, type anomaly log, bizjet cluster log
-- **Page 5:** Convergence Engine — probability display, score history chart, live signal
-  breakdown table, coherence multiplier status, divergence flag, scoring explainer
+- **Page 5:** Convergence Engine — probability display, score history chart, Polymarket ME
+  market table (Edge, Bet, links), live signal breakdown, coherence multiplier status,
+  divergence flag, scoring explainer
+- **Home:** 7th metric tile — "Top Poly Edge" (largest |model − market| opportunity)
 
 ---
 
@@ -137,11 +166,17 @@ Run with: `streamlit run dashboard.py`
 
 ### GDELT signal redesigned — Goldstein average approach (2026-03-14) ✓
 Old count-based approach was permanently saturated. Replaced with:
-- `avg_goldstein(30d)` vs `avg_goldstein(prior 60d baseline)`
+- `avg_goldstein(30d)` vs `avg_goldstein(baseline window)`
 - Negative delta → escalation signal; positive → de-escalation
 - Back-tested against 7 historical events: 4/4 escalation, 2/3 de-escalation correct
 - Fixes silent column-name bug (old code used BigQuery names, never actually ran)
-- Live right now: delta=-1.47 (escalation signal scoring 4.67) as of 2026-03-14
+
+**Baseline window extended (2026-03-15):** old baseline (days 31-90) sat immediately
+adjacent to the signal window and could be contaminated by sustained escalation.
+New baseline: days 91-270 (~3-9 months ago, 179-day window). With live data:
+delta improved from partial to full: avg_30d=-2.293 vs baseline=-0.493 → Δ=-1.800.
+Detail string in signal now shows `baseline(91-270d)=X.XXX` so it's always clear
+what period was compared.
 
 **Future improvement:** add event volume weighting — a Goldstein drop with 5× normal
 event count is more significant than the same drop at baseline volume. Would multiply
@@ -172,6 +207,60 @@ Fixes applied:
 
 ---
 
+## Recent Changes (2026-03-15 — convergence engine overhaul)
+
+Five math fixes and five pending UI/UX improvements were identified in a full code review.
+Five math fixes applied this session:
+
+### 1. GPS spoofing → convergence engine ✓
+`spoofing_events` table had no path to the scoring engine. Added `read_spoofing_events()`
+which groups events by maritime region (inline lat/lon → zone lookup, Hormuz matched before
+broader Persian Gulf box) and tiers S0 by cluster density. Previously this high-confidence
+signal was silently discarded every cycle.
+
+### 2. Coherence zone normalization ✓
+Coherence was grouping by raw `s["region"]` string, which meant ADS-B "Persian Gulf / Qatar"
+and AIS "persian_gulf" would never cohere even though they're the same area. Added `_ZONE_MAP`
+dict + `_ICAO_PREFIX_ZONES` dict + `_coherence_zone()` function. All 8 signal layers now
+normalise to shared macro-zones before the coherence check. GDELT/going-dark act as ME
+wildcards (can join any zone's coherence but can't trigger it alone). Verified 15 region
+string → zone mappings in tests.
+
+### 3. State decay lambda per signal type ✓
+`state_score()` was using `LAMBDAS["notam"]` (λ=0.35) for ALL resolved states regardless
+of type. ISR aircraft should persist for weeks after landing (λ=0.06), not fade in 2 days.
+Added `signal_type` parameter to `state_score()`. Each caller now passes its own lambda key:
+- Traffic anomalies: `"route_suspension"` (λ=0.12)
+- ISR/command VIP: `"isr_command"` (λ=0.06)
+- Going dark: `"going_dark"` (λ=0.60)
+- NOTAM: `"notam"` (λ=0.35) — no behavior change, now explicit
+
+### 4. GDELT baseline window ✓
+Baseline moved from days 31-90 → days 91-270. See GDELT section above for detail.
+
+### 5. Score velocity/acceleration ✓
+Added `compute_velocity()` — compares current score to 24h-ago score, adds rising-score
+bonus before sigmoid normalisation. New constants: VELOCITY_WEIGHT=0.30, VELOCITY_MAX_BONUS=30.
+New DB columns: `velocity_24h`, `velocity_bonus`. Convergence Engine dashboard page now
+shows a 5th metric tile with direction arrow and 24h change.
+
+### UI improvements applied (2026-03-15)
+The same review also identified UI issues. Applied alongside Stage 4:
+6. **Polymarket price on convergence page ✓** — full ME market table with Edge/Bet/Volume/
+   Expires columns; edge color-coded by magnitude; clickable links to polymarket.com.
+   Top-edge metric tile on main overview page.
+9. **Progress bar overflow ✓** — replaced CSS progress bars with Plotly horizontal bar
+   gauge (`chart_probability_gauge()`). No more overflow at low probabilities.
+
+### Pending UI improvements (not yet done)
+7. **Escalation % metric on main overview** — most actionable number still buried on page 5.
+8. **Stacked signal composition chart** — shows which signal types are driving the score
+   over time. A spike that's all-NOTAM is less significant than a multi-layer convergence.
+10. **GDELT sparkline hline on wrong axis** — `add_hline(y=0)` targets primary y-axis
+    (event counts) instead of secondary y-axis (Goldstein scale). Visual cosmetic only.
+
+---
+
 ## What's Planned But Not Started
 
 ### Stage 2d: Maritime / AIS Layer — DONE ✓ (pending first run)
@@ -189,10 +278,16 @@ AIS vessel tracking via aisstream.io WebSocket stream.
 - **Baseline needs ~7 days** before anomaly detection activates
 - **Future:** add event volume weighting to GDELT signal; satellite AIS for Arabian Sea gaps
 
-### Stage 4: Polymarket Integration — IN PROGRESS
-Surface relevant prediction markets, suggest position sizing based on convergence
-score. Human makes the final trading decision. Look for "incongruent markets" —
-high convergence score but low Polymarket probability = entry point.
+### Stage 4: Polymarket Integration — DONE ✓ (Phase 1 — price visibility)
+Live ME market prices surfaced alongside model probabilities so edge is visible in one view.
+- `polymarket_collector.py` — polls Gamma API (public, no auth), filters ME markets by 16 keywords,
+  classifies each as escalation or de-escalation track, stores to `polymarket_markets.db`
+- `polymarket_markets.db` — markets + price_history tables (SQLite, local only)
+- Convergence Engine page: new "Polymarket: ME Markets" section with Edge column (+/− signed),
+  Bet column (Yes/No), color-coded by |edge| magnitude, links to Polymarket.com
+- Overview dashboard: "Top Poly Edge" metric tile showing largest |edge| opportunity
+- Run with: `python3 polymarket_collector.py --loop` (polls every 15 min)
+- **Phase 2 (future):** Kelly criterion position sizing, edge threshold alerts, price history charts
 
 ### Stage 5: Planespotter Layer (manual for now)
 Telegram channels and planespotter forums pick up events faster than ADS-B.
@@ -207,6 +302,7 @@ Worth monitoring manually until volume justifies automation.
 python3 adsb_collector.py --loop        # ADS-B + strategic tracking
 python3 notam_collector.py --loop       # NOTAMs
 python3 convergence_engine.py --loop    # Convergence scoring
+python3 polymarket_collector.py --loop  # Polymarket ME market prices (every 15 min)
 streamlit run dashboard.py              # Dashboard at localhost:8501
 ```
 
@@ -244,6 +340,7 @@ VIP Vessels.csv                 Maritime watchlist (Iranian frigates, USNS logis
 adsb_collector.py               OpenSky polling + Mode A/B detection
 notam_collector.py              Cirium Sky API NOTAM collection
 convergence_engine.py           Stage 3 scoring daemon
+polymarket_collector.py         Polymarket Gamma API → SQLite (polls every 15 min)
 route_collector.py              Cirium Flex API route suspension collector
 load_aircraft_db.py             One-time migration: CSV → SQLite aircraft_lookup table
 VIP Aircraft.csv                Government/diplomatic aircraft watchlist (49 aircraft, 28 trackable)
@@ -268,5 +365,6 @@ notam_events.db                 NOTAM database
 convergence_engine.db           Convergence scores output database
 route_events.db                 Route suspension database
 ais_events.db                   AIS maritime vessel tracking database
+polymarket_markets.db           Polymarket ME markets + price history
 aircraft-database-complete.csv  616K-row source CSV (only needed for load_aircraft_db.py)
 ```
