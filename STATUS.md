@@ -153,13 +153,20 @@ historical playback to find codes.
 
 ## What's Planned But Not Started
 
-### Stage 2d: Maritime / AIS Layer
-Ships are as important as aircraft for Middle East signals:
-- Carrier strike group positioning (Hormuz, Arabian Sea)
-- Tanker rerouting away from Hormuz/Red Sea
-- USNS supply ship tracking as CSG shadow indicator
-- Velocity checks to filter GPS spoofing (600+ spoofing events/day in Hormuz, March 2026)
-Same structure as ADS-B. MarineTraffic or VesselFinder API.
+### Stage 2d: Maritime / AIS Layer — DONE ✓ (pending API key + first run)
+AIS vessel tracking via aisstream.io WebSocket stream.
+- `ais_collector.py` — streams 10 min every 30 min, stores to `ais_events.db`
+- 5 regions: Persian Gulf, Strait of Hormuz, Red Sea, Gulf of Aden, Arabian Sea
+- Tanker/cargo density vs 7-day same-hour baseline — drop >30% → MEDIUM, >50% → HIGH
+- Military vessel surge >2× baseline → HIGH escalation signal
+- GPS spoofing detection: SOG >50kn or position jump >50nm flagged
+- MMSI watchlist: `VIP Vessels.csv` (8 vessels: Iranian frigates, USNS logistics ships)
+- `pages/6_Maritime_Monitor.py` — counts trend, watchlist sightings map, spoofing log
+- Auth: `AISSTREAM_API_KEY` in `.env` (free tier at aisstream.io)
+- Run: `python3 ais_collector.py --loop`
+- Systemd: `ais-collector.service`
+- **Baseline needs ~7 days** before anomaly detection activates
+- **Future:** add event volume weighting to GDELT signal; satellite AIS for Arabian Sea gaps
 
 ### Stage 4: Polymarket Integration
 Surface relevant prediction markets, suggest position sizing based on convergence
@@ -206,10 +213,13 @@ pages/
   3_NOTAM_Monitor.py            NOTAM airspace restriction dashboard
   4_Strategic_Monitor.py        VIP + strategic type clustering dashboard
   5_Convergence_Engine.py       Aggregated score, signal breakdown, coherence status
+  6_Maritime_Monitor.py         AIS vessel counts, watchlist sightings, spoofing events
 gdelt_collector.py              BigQuery → SQLite pipeline
 gdelt_verify.py                 Historical event verification (5 events)
 gdelt_query.py                  Ad-hoc date range query tool
 gdelt_backtest.py               GDELT signal back-test + calibration diagnostics
+ais_collector.py                aisstream.io AIS maritime collection + anomaly detection
+VIP Vessels.csv                 Maritime watchlist (Iranian frigates, USNS logistics ships)
 adsb_collector.py               OpenSky polling + Mode A/B detection
 notam_collector.py              Cirium Sky API NOTAM collection
 convergence_engine.py           Stage 3 scoring daemon
@@ -222,6 +232,7 @@ deploy/
   setup.sh                      Fresh VPS setup script (run as root)
   adsb-collector.service        systemd service
   notam-collector.service       systemd service
+  ais-collector.service         systemd service
   marketsignal-dashboard.service systemd service
 STATUS.md                       This file
 ```
@@ -235,5 +246,6 @@ adsb_events.db                  ADS-B + strategic tracking database
 notam_events.db                 NOTAM database
 convergence_engine.db           Convergence scores output database
 route_events.db                 Route suspension database
+ais_events.db                   AIS maritime vessel tracking database
 aircraft-database-complete.csv  616K-row source CSV (only needed for load_aircraft_db.py)
 ```

@@ -1,0 +1,9 @@
+mmsi,name,country,operator,vessel_type,category,signal_value,notes
+319908000,Al Kuwait,Kuwait,Kuwait Oil Tanker Co,crude_tanker,tanker,medium,VLCC regularly transits Hormuz — watch for route change
+477307400,Arman 114,Iran,IRISL,cargo,cargo,medium,Iranian cargo — IRISL sanctioned fleet
+422204800,IRIN Alborz,Iran,Islamic Republic of Iran Navy,frigate,military,high,Iranian frigate — Hormuz patrol vessel
+422204900,IRIN Sabalan,Iran,Islamic Republic of Iran Navy,frigate,military,high,Iranian frigate — historically confrontational with USN
+422232200,IRIN Jamaran,Iran,Islamic Republic of Iran Navy,frigate,military,high,Lead ship of Moudge-class — IRGCN flagship
+338910160,USNS Patuxent,USA,US Navy MSC,replenishment_oiler,logistics,medium,T-AO-201 — combat logistics force — CSG shadow indicator
+338237370,USNS Tippecanoe,USA,US Navy MSC,replenishment_oiler,logistics,medium,T-AO-199 — combat logistics force — CSG shadow indicator
+338234631,USNS Lewis and Clark,USA,US Navy MSC,dry_cargo,logistics,medium,T-AKE-1 — ammunition and stores — CSG shadow indicator
