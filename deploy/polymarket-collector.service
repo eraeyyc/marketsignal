@@ -1,0 +1,19 @@
+[Unit]
+Description=MarketSignal Polymarket Collector
+Documentation=https://github.com/eraeyyc/marketsignal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=marketsignal
+WorkingDirectory=/home/marketsignal/marketsignal
+EnvironmentFile=/home/marketsignal/marketsignal/.env
+ExecStart=/home/marketsignal/marketsignal/venv/bin/python3 polymarket_collector.py --loop
+Restart=always
+RestartSec=30
+StandardOutput=append:/var/log/marketsignal/polymarket.log
+StandardError=append:/var/log/marketsignal/polymarket.log
+
+[Install]
+WantedBy=multi-user.target
