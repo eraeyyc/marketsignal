@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-MarketSignal — GDELT Back-test
+MarketSignal — GDELT Back-test (Goldstein average approach)
 
-Computes retrospective GDELT-only convergence scores for known historical events
-and diagnoses signal design issues.
+Instead of counting events with extreme Goldstein scores (which saturates),
+this approach uses the AVERAGE Goldstein scale over a rolling 30-day window
+compared against the prior 60-day baseline.
+
+  delta = avg_goldstein_30d - avg_goldstein_baseline
+  - Negative delta → Goldstein dropped → escalation signal
+  - Positive delta → Goldstein rose   → de-escalation signal
+
+Mirrors the new read_gdelt_signals() in convergence_engine.py exactly.
 
 Usage:
     python3 gdelt_backtest.py              # full back-test, all events
     python3 gdelt_backtest.py --verbose    # include day-by-day tables
     python3 gdelt_backtest.py --calibrate  # calibration summary only
-
-Outputs:
-  1. Per-event signal trajectory (event count + score at T-30 to T-0)
-  2. Baseline comparison (quiet period vs. event period)
-  3. Alternative lambda analysis (what faster decay would look like)
-  4. Calibration recommendations for SIGMOID_BETA and signal parameters
 """
 
 import sqlite3
@@ -24,18 +25,16 @@ from datetime import datetime, date, timedelta
 
 DB_PATH = "gdelt_events.db"
 
-# ── Current convergence_engine.py constants (for comparison) ───────────────────
-S0_ESC    = 4.0     # convergence_engine.py S0["gdelt_escalation"]
-S0_DEESC  = 4.0     # convergence_engine.py S0["gdelt_deescalation"]
-LAMBDA    = 0.009   # convergence_engine.py LAMBDAS["gdelt_esc"]
-LIMIT     = 50      # convergence_engine.py hard cap per query
+# ── Signal parameters (must match convergence_engine.py) ──────────────────────
 
-# Alternative lambda to test (0.10/day = 7-day half-life, much more discriminating)
-LAMBDA_ALT = 0.10
+S0_PER_UNIT   = 4.0    # score contribution per 1.0 unit of Goldstein delta
+DELTA_FLOOR   = 0.3    # minimum delta to fire a signal (below this = noise)
+BASELINE_DAYS = 60     # days to use as baseline (days 31–90 before eval date)
+WINDOW_DAYS   = 30     # rolling signal window
 
+# Sigmoid params (convergence_engine.py values)
 SIGMOID_BETA  = 30.0
 SIGMOID_ALPHA = 0.08
-WINDOW_DAYS   = 30
 
 # ── Known historical events ────────────────────────────────────────────────────
 
@@ -44,238 +43,140 @@ KNOWN_EVENTS = [
         "label":  "Hamas Oct 7 attack",
         "t0":     date(2023, 10, 7),
         "track":  "escalation",
-        "notes":  "Root 18/19/20 (assault/fight/mass violence). Goldstein minimum.",
+        "notes":  "Goldstein should plunge — highest-intensity attack in dataset.",
     },
     {
         "label":  "Iranian drone/missile strike on Israel",
         "t0":     date(2024, 4, 14),
         "track":  "escalation",
-        "notes":  "Root 15/18/19. IRN+ISR actors. Largest Iranian strike on Israel.",
+        "notes":  "Goldstein should drop. IRN+ISR direct exchange.",
     },
     {
         "label":  "Houthi Red Sea escalation (US/UK airstrikes)",
         "t0":     date(2024, 1, 12),
         "track":  "escalation",
-        "notes":  "Root 13/15/18. YEM actors. US/UK airstrikes on Houthi targets.",
+        "notes":  "Goldstein drop. YEM actors. Multi-country military response.",
     },
     {
         "label":  "Hezbollah opens northern front",
         "t0":     date(2023, 10, 8),
         "track":  "escalation",
-        "notes":  "Root 15/18. LBN+ISR. Day after Oct 7.",
+        "notes":  "Goldstein drop — same window as Oct 7, compounds the signal.",
     },
     {
         "label":  "First Gaza ceasefire (Nov 2023)",
         "t0":     date(2023, 11, 22),
         "track":  "deescalation",
-        "notes":  "Root 03/04/05. QAT/EGY/USA mediating. 4-day pause.",
+        "notes":  "Goldstein should rise. QAT/EGY/USA mediating.",
     },
     {
         "label":  "Lebanon ceasefire (Nov 2024)",
         "t0":     date(2024, 11, 27),
         "track":  "deescalation",
-        "notes":  "Root 03/04/05/08. ISR+LBN. 60-day ceasefire via USA/FRA.",
+        "notes":  "Goldstein rise. ISR+LBN 60-day ceasefire.",
     },
     {
         "label":  "Gaza ceasefire agreement (Jan 2025)",
         "t0":     date(2025, 1, 15),
         "track":  "deescalation",
-        "notes":  "Root 03/04/05/08. Broad diplomatic cooperation. Major ceasefire.",
+        "notes":  "Goldstein rise. Broad multi-party diplomatic agreement.",
     },
 ]
-
-# "Quiet" period baseline: Jan–Sep 2023, before Oct 7 changed the ME baseline
-QUIET_PERIOD = (date(2023, 1, 1), date(2023, 9, 30))
 
 CHECKPOINTS = [30, 14, 7, 3, 1, 0]
 
 
 # ── Math ───────────────────────────────────────────────────────────────────────
 
-def decay_score(s0, event_date_str, eval_date, lam):
-    event_dt = datetime.strptime(event_date_str, "%Y%m%d").date()
-    days_ago = (eval_date - event_dt).days
-    if days_ago < 0:
-        return 0.0
-    return s0 * math.exp(-lam * days_ago)
-
-
 def to_probability(raw_score):
     return 1.0 / (1.0 + math.exp(-SIGMOID_ALPHA * (raw_score - SIGMOID_BETA)))
 
 
-# ── Queries ────────────────────────────────────────────────────────────────────
-
-def _where_clause(track):
-    if track == "escalation":
-        return "goldstein_scale < -5 AND CAST(event_root_code AS INTEGER) BETWEEN 14 AND 20"
-    return "goldstein_scale > 5 AND CAST(event_root_code AS INTEGER) BETWEEN 3 AND 8"
-
-
-def event_count_in_window(conn, start_date, end_date, track):
-    """Raw count of qualifying events in a date range."""
-    rows = conn.execute(f"""
-        SELECT COUNT(*) FROM events
-        WHERE event_date BETWEEN ? AND ?
-          AND {_where_clause(track)}
-    """, (start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d"))).fetchone()
-    return rows[0]
-
-
-def gdelt_score_at_date(conn, eval_date, track, lam=LAMBDA):
+def gdelt_signal_at_date(conn, eval_date):
     """
-    GDELT convergence score at a historical date using the same logic as
-    convergence_engine.py read_gdelt_signals() — limited to 50 events.
+    Compute Goldstein-average GDELT signal at a historical date.
+    Returns dict with keys: avg_30d, avg_baseline, delta, esc_score, deesc_score.
+    Mirrors convergence_engine.py read_gdelt_signals() logic exactly.
     """
-    window_start = (eval_date - timedelta(days=WINDOW_DAYS)).strftime("%Y%m%d")
-    window_end   = eval_date.strftime("%Y%m%d")
-    order        = "ASC" if track == "escalation" else "DESC"
-    s0           = S0_ESC if track == "escalation" else S0_DEESC
+    win_start  = (eval_date - timedelta(days=WINDOW_DAYS)).strftime("%Y%m%d")
+    win_end    = eval_date.strftime("%Y%m%d")
+    base_start = (eval_date - timedelta(days=WINDOW_DAYS + BASELINE_DAYS)).strftime("%Y%m%d")
+    base_end   = (eval_date - timedelta(days=WINDOW_DAYS + 1)).strftime("%Y%m%d")
 
-    rows = conn.execute(f"""
-        SELECT event_date, goldstein_scale
+    row_win = conn.execute("""
+        SELECT AVG(goldstein_scale), COUNT(*)
         FROM events
         WHERE event_date BETWEEN ? AND ?
-          AND {_where_clause(track)}
-        ORDER BY goldstein_scale {order}
-        LIMIT {LIMIT}
-    """, (window_start, window_end)).fetchall()
+    """, (win_start, win_end)).fetchone()
 
-    return sum(decay_score(s0, r[0], eval_date, lam) for r in rows)
-
-
-def gdelt_score_unlimited(conn, eval_date, track, lam):
-    """
-    GDELT score without LIMIT cap — use article-weighted S0 per event,
-    scaled so a single massive spike day matches the existing S0 scale.
-    """
-    window_start = (eval_date - timedelta(days=WINDOW_DAYS)).strftime("%Y%m%d")
-    window_end   = eval_date.strftime("%Y%m%d")
-
-    rows = conn.execute(f"""
-        SELECT event_date, num_articles
+    row_base = conn.execute("""
+        SELECT AVG(goldstein_scale), COUNT(*)
         FROM events
         WHERE event_date BETWEEN ? AND ?
-          AND {_where_clause(track)}
-    """, (window_start, window_end)).fetchall()
+    """, (base_start, base_end)).fetchone()
 
-    if not rows:
-        return 0.0
+    avg_30d,     count_30d    = row_win
+    avg_baseline, count_base  = row_base
 
-    # Normalise: treat each event's contribution as S0 × article_weight × decay
-    # article_weight = log(articles+1) / log(max_articles+1) keeps it 0–1
-    articles = [r[1] or 1 for r in rows]
-    max_art  = max(articles)
+    if not avg_30d or not avg_baseline or count_30d < 50 or count_base < 50:
+        return None  # not enough data
 
-    s0 = S0_ESC if track == "escalation" else S0_DEESC
-    total = 0.0
-    for (event_date_str, art), weight_art in zip(rows, articles):
-        art_w = math.log(art + 1) / math.log(max_art + 1)
-        total += decay_score(s0 * art_w, event_date_str, eval_date, lam)
-    return total
+    delta      = avg_30d - avg_baseline
+    esc_score  = S0_PER_UNIT * max(0.0, -delta - DELTA_FLOOR)
+    deesc_score = S0_PER_UNIT * max(0.0,  delta - DELTA_FLOOR)
 
-
-def daily_event_counts(conn, t0, track):
-    """Return dict {eval_date: count} for each day in [t0-30, t0]."""
-    result = {}
-    for days_before in range(WINDOW_DAYS + 1):
-        eval_date    = t0 - timedelta(days=days_before)
-        window_start = eval_date - timedelta(days=WINDOW_DAYS)
-        count        = event_count_in_window(conn, window_start, eval_date, track)
-        result[eval_date] = count
-    return result
-
-
-# ── Baseline ───────────────────────────────────────────────────────────────────
-
-def compute_quiet_baseline(conn, track):
-    """
-    Average daily event count in the quiet period (Jan–Sep 2023).
-    Returns (avg_per_day, avg_score_with_current_lambda, avg_score_with_alt_lambda).
-    """
-    start, end = QUIET_PERIOD
-    total_days = (end - start).days + 1
-
-    # Sample 10 evenly spaced evaluation dates across the quiet window
-    sample_scores_curr = []
-    sample_scores_alt  = []
-    for i in range(10):
-        eval_date = start + timedelta(days=i * (total_days // 10))
-        sample_scores_curr.append(gdelt_score_at_date(conn, eval_date, track, LAMBDA))
-        sample_scores_alt.append(gdelt_score_at_date(conn, eval_date, track, LAMBDA_ALT))
-
-    total_count = event_count_in_window(conn, start, end, track)
-    avg_per_day = total_count / total_days
-
-    return (
-        avg_per_day,
-        sum(sample_scores_curr) / len(sample_scores_curr),
-        sum(sample_scores_alt)  / len(sample_scores_alt),
-    )
+    return {
+        "avg_30d":      avg_30d,
+        "avg_baseline": avg_baseline,
+        "delta":        delta,
+        "esc_score":    esc_score,
+        "deesc_score":  deesc_score,
+        "count_30d":    count_30d,
+        "count_base":   count_base,
+    }
 
 
 # ── Sparkline ──────────────────────────────────────────────────────────────────
 
-def sparkline(values):
+def sparkline(values, center=0.0):
+    """ASCII sparkline. Values above center shown with up-blocks, below with down."""
     BLOCKS = " ▁▂▃▄▅▆▇█"
     if not values:
         return ""
-    max_v = max(values) or 1.0
-    return "".join(BLOCKS[min(int(v / max_v * (len(BLOCKS) - 1)), len(BLOCKS) - 1)] for v in values)
+    mn, mx = min(values), max(values)
+    rng = (mx - mn) or 1.0
+    return "".join(BLOCKS[min(int((v - mn) / rng * (len(BLOCKS) - 1)), len(BLOCKS) - 1)]
+                   for v in values)
 
 
-# ── Per-event analysis ─────────────────────────────────────────────────────────
+# ── Back-test runner ───────────────────────────────────────────────────────────
 
-def analyse_event(conn, event, baseline_scores, verbose=False):
+def analyse_event(conn, event):
     t0    = event["t0"]
     track = event["track"]
-    label = event["label"]
 
-    earliest_str = conn.execute("SELECT MIN(event_date) FROM events").fetchone()[0]
-    earliest     = datetime.strptime(earliest_str, "%Y%m%d").date()
-
-    # Per-checkpoint: event count, score (current lambda), score (alt lambda)
+    # Compute signal at each checkpoint
     checkpoints = {}
     for cp in CHECKPOINTS:
         eval_date = t0 - timedelta(days=cp)
-        if eval_date < earliest:
-            checkpoints[cp] = None
-            continue
-        window_start = eval_date - timedelta(days=WINDOW_DAYS)
-        count        = event_count_in_window(conn, window_start, eval_date, track)
-        score_curr   = gdelt_score_at_date(conn, eval_date, track, LAMBDA)
-        score_alt    = gdelt_score_at_date(conn, eval_date, track, LAMBDA_ALT)
-        checkpoints[cp] = (count, score_curr, score_alt)
+        sig = gdelt_signal_at_date(conn, eval_date)
+        checkpoints[cp] = sig
 
-    # Sparkline: daily event counts
+    # Day-by-day for sparkline
     daily = {}
     for days_before in range(WINDOW_DAYS + 1):
-        eval_date    = t0 - timedelta(days=days_before)
-        if eval_date < earliest:
-            continue
-        window_start = eval_date - timedelta(days=WINDOW_DAYS)
-        daily[eval_date] = event_count_in_window(conn, window_start, eval_date, track)
-
-    # Event count on event day vs. quiet baseline
-    event_window_count = event_count_in_window(
-        conn, t0 - timedelta(days=WINDOW_DAYS), t0, track
-    )
-    quiet_avg, quiet_score_curr, quiet_score_alt = baseline_scores
-
-    ratio = event_window_count / max(quiet_avg * WINDOW_DAYS, 1)
+        eval_date = t0 - timedelta(days=days_before)
+        sig = gdelt_signal_at_date(conn, eval_date)
+        if sig:
+            daily[eval_date] = sig
 
     return {
-        "label":               label,
-        "t0":                  t0,
-        "track":               track,
-        "notes":               event["notes"],
-        "checkpoints":         checkpoints,
-        "daily_counts":        daily,
-        "event_window_count":  event_window_count,
-        "quiet_avg_per_day":   quiet_avg,
-        "quiet_score_curr":    quiet_score_curr,
-        "quiet_score_alt":     quiet_score_alt,
-        "event_baseline_ratio":ratio,
+        "label":       event["label"],
+        "t0":          t0,
+        "track":       track,
+        "notes":       event["notes"],
+        "checkpoints": checkpoints,
+        "daily":       daily,
     }
 
 
@@ -284,179 +185,174 @@ def print_event_result(result, verbose=False):
     t0     = result["t0"]
     track  = result["track"]
     checks = result["checkpoints"]
-    daily  = result["daily_counts"]
+    daily  = result["daily"]
 
     icon = "↑ ESC" if track == "escalation" else "↓ DEESC"
-    t0_data = checks.get(0)
+    score_key = "esc_score" if track == "escalation" else "deesc_score"
 
-    print(f"\n{'=' * 72}")
+    print(f"\n{'=' * 74}")
     print(f"  {icon}  {label}")
     print(f"  Date: {t0}  |  {result['notes']}")
-    print(f"{'=' * 72}")
+    print(f"{'=' * 74}")
 
-    # Event density vs. quiet baseline
-    evt_count = result["event_window_count"]
-    quiet_day = result["quiet_avg_per_day"]
-    ratio     = result["event_baseline_ratio"]
-    print(f"  30-day window event count at T-0: {evt_count:,}  "
-          f"(quiet avg {quiet_day:.0f}/day × 30 = {quiet_day*30:.0f})  "
-          f"ratio: {ratio:.1f}×")
+    t0_sig = checks.get(0)
+    if t0_sig:
+        print(f"  At T-0: avg_30d={t0_sig['avg_30d']:.3f}  "
+              f"baseline={t0_sig['avg_baseline']:.3f}  "
+              f"delta={t0_sig['delta']:+.3f}  "
+              f"count={t0_sig['count_30d']:,}")
+    else:
+        print("  T-0: insufficient data")
 
-    # Checkpoint table
-    print(f"\n  {'Day':<8}  {'Events in 30d win':>18}  "
-          f"{'Score (λ=0.009)':>16}  {'Score (λ=0.10)':>14}  {'Prob (λ=0.10)':>14}")
-    print(f"  {'-' * 78}")
+    print(f"\n  {'Day':<8}  {'avg 30d':>9}  {'baseline':>9}  {'delta':>8}  "
+          f"{'Score':>8}  {'Prob':>8}  {'Signal?':>8}")
+    print(f"  {'-' * 68}")
 
     for cp in CHECKPOINTS:
-        data = checks.get(cp)
-        if data is None:
-            print(f"  T-{cp:<5}   {'(before DB)':>18}")
+        sig = checks.get(cp)
+        if not sig:
+            print(f"  T-{cp:<5}   {'(no data)':>9}")
             continue
-        count, score_curr, score_alt = data
-        prob_curr = to_probability(score_curr) * 100
-        prob_alt  = to_probability(score_alt)  * 100
-        marker    = "  ← event" if cp == 0 else ""
-        print(f"  T-{cp:<5}   {count:>18,}  {score_curr:>16.1f}  "
-              f"{score_alt:>14.2f}  {prob_alt:>13.1f}%{marker}")
+        score  = sig[score_key]
+        prob   = to_probability(score) * 100
+        fired  = "YES" if sig["delta"] < -DELTA_FLOOR or sig["delta"] > DELTA_FLOOR else "no"
+        marker = "  ← event" if cp == 0 else ""
+        print(f"  T-{cp:<5}   {sig['avg_30d']:>9.3f}  {sig['avg_baseline']:>9.3f}  "
+              f"{sig['delta']:>+8.3f}  {score:>8.2f}  {prob:>7.1f}%  {fired:>8}{marker}")
 
-    # Trend using alt lambda (the meaningful one)
-    t7 = checks.get(7)
-    t0d = checks.get(0)
-    if t7 and t0d:
-        _, _, s7 = t7
-        _, _, s0 = t0d
+    # Trend: did score rise into event?
+    t7_sig = checks.get(7)
+    t0_sig = checks.get(0)
+    if t7_sig and t0_sig:
+        s7 = t7_sig[score_key]
+        s0 = t0_sig[score_key]
         if s7 > 0:
             rise = (s0 - s7) / s7 * 100
-            trend_str = f"+{rise:.0f}% rise T-7→T-0" if rise >= 0 else f"{rise:.0f}% decline T-7→T-0"
-            print(f"\n  Trend (λ=0.10): {trend_str}")
+            print(f"\n  Trend T-7→T-0: score {s7:.2f} → {s0:.2f}  ({rise:+.0f}%)")
+        elif s0 > 0:
+            print(f"\n  Trend T-7→T-0: signal appeared at T-0 (was zero at T-7)")
+        else:
+            print(f"\n  Trend T-7→T-0: signal did not fire")
 
-    # Sparkline of daily 30d-rolling event counts
+    # Goldstein average sparkline
     if daily:
         sorted_days = sorted(daily.keys())
-        vals = [daily[d] for d in sorted_days]
-        print(f"  Sparkline (event count in rolling 30d window, T-30→T-0): "
-              f"{sparkline(vals)}  peak={max(vals):,}")
+        avgs = [daily[d]["avg_30d"] for d in sorted_days]
+        deltas = [daily[d]["delta"] for d in sorted_days]
+        print(f"  Goldstein avg (T-30→T-0, range {min(avgs):.2f}–{max(avgs):.2f}): "
+              f"{sparkline(avgs)}")
+        print(f"  Delta vs baseline (T-30→T-0, range {min(deltas):+.2f}–{max(deltas):+.2f}): "
+              f"{sparkline(deltas)}")
 
     if verbose and daily:
-        print(f"\n  Day-by-day 30d-rolling event count:")
+        print(f"\n  Day-by-day:")
+        print(f"  {'Date':<12}  {'avg_30d':>8}  {'baseline':>9}  {'delta':>8}  {'score':>8}")
         for d in sorted(daily.keys()):
-            bar = "█" * min(int(daily[d] / 2000), 40)
-            print(f"    {d}  {daily[d]:>8,}  {bar}")
+            sig = daily[d]
+            print(f"  {d}  {sig['avg_30d']:>8.3f}  {sig['avg_baseline']:>9.3f}  "
+                  f"{sig['delta']:>+8.3f}  {sig[score_key]:>8.2f}")
 
 
 # ── Calibration summary ────────────────────────────────────────────────────────
 
 def print_calibration_summary(results):
-    print(f"\n\n{'=' * 72}")
-    print("  CALIBRATION SUMMARY & SIGNAL DESIGN DIAGNOSIS")
-    print(f"{'=' * 72}\n")
+    score_key_map = {"escalation": "esc_score", "deescalation": "deesc_score"}
 
-    # Collect T-0 scores
-    esc_curr_t0, esc_alt_t0, deesc_curr_t0, deesc_alt_t0 = [], [], [], []
-    esc_ratios = []
+    print(f"\n\n{'=' * 74}")
+    print("  CALIBRATION SUMMARY")
+    print(f"{'=' * 74}\n")
+    print(f"  Signal design: avg_goldstein(30d) vs avg_goldstein(60d baseline)")
+    print(f"  Score = S0_per_unit × max(0, |delta| − floor)  where S0={S0_PER_UNIT}, floor={DELTA_FLOOR}")
+    print(f"  Current SIGMOID_BETA = {SIGMOID_BETA}")
+    print()
+
+    all_t0 = {"escalation": [], "deescalation": []}
+    all_deltas = {"escalation": [], "deescalation": []}
+    fired = {"escalation": 0, "deescalation": 0}
+    total = {"escalation": 0, "deescalation": 0}
 
     for r in results:
-        t0_data = r["checkpoints"].get(0)
-        if t0_data is None:
+        track = r["track"]
+        sk    = score_key_map[track]
+        t0_sig = r["checkpoints"].get(0)
+        if not t0_sig:
             continue
-        count, score_curr, score_alt = t0_data
-        if r["track"] == "escalation":
-            esc_curr_t0.append(score_curr)
-            esc_alt_t0.append(score_alt)
-            esc_ratios.append(r["event_baseline_ratio"])
+        total[track] += 1
+        all_t0[track].append(t0_sig[sk])
+        all_deltas[track].append(t0_sig["delta"])
+        if t0_sig[sk] > 0:
+            fired[track] += 1
+
+    for track in ["escalation", "deescalation"]:
+        scores = all_t0[track]
+        deltas = all_deltas[track]
+        if not scores:
+            continue
+        avg_score = sum(scores) / len(scores)
+        avg_delta = sum(deltas) / len(deltas)
+        print(f"  {track.upper()} events ({total[track]} total, {fired[track]} fired signal at T-0):")
+        print(f"    avg delta at T-0: {avg_delta:+.3f}  "
+              f"(negative = more hostile, positive = more cooperative)")
+        print(f"    avg score at T-0: {avg_score:.2f}")
+        print(f"    P(T-0) with β={SIGMOID_BETA}: {to_probability(avg_score)*100:.1f}%")
+        print()
+
+    print("  ── Signal quality assessment ─────────────────────────────────────")
+    print()
+
+    esc_scores = all_t0["escalation"]
+    deesc_scores = all_t0["deescalation"]
+
+    if esc_scores and max(esc_scores) > 0:
+        print(f"  Escalation: {fired['escalation']}/{total['escalation']} events fired signal at T-0")
+        print(f"    Score range: {min(esc_scores):.2f} – {max(esc_scores):.2f}")
+        print(f"    Delta range: {min(all_deltas['escalation']):+.3f} – "
+              f"{max(all_deltas['escalation']):+.3f}")
+    else:
+        print("  Escalation: signal did not fire at T-0 for any event")
+
+    if deesc_scores and max(deesc_scores) > 0:
+        print(f"  De-escalation: {fired['deescalation']}/{total['deescalation']} events fired signal at T-0")
+        print(f"    Score range: {min(deesc_scores):.2f} – {max(deesc_scores):.2f}")
+        print(f"    Delta range: {min(all_deltas['deescalation']):+.3f} – "
+              f"{max(all_deltas['deescalation']):+.3f}")
+    else:
+        print("  De-escalation: signal did not fire at T-0 for any event")
+
+    print()
+    print("  ── SIGMOID_BETA recommendation ───────────────────────────────────")
+    print()
+
+    all_scores = esc_scores + deesc_scores
+    if all_scores:
+        avg_all = sum(all_scores) / len(all_scores)
+        # Beta at which avg score = 50% probability
+        # We want P=50% when all layers combined = beta
+        # GDELT is one of ~5 signal layers, typically contributing 10-25% of total score
+        # So estimated full-system score ≈ GDELT score / 0.15
+        estimated_full = avg_all / 0.15 if avg_all > 0 else None
+        print(f"  Average GDELT-only score at T-0: {avg_all:.2f}")
+        if estimated_full:
+            print(f"  Estimated full-system score (GDELT = ~15% of total): ~{estimated_full:.0f}")
+            print(f"  Suggested SIGMOID_BETA: {estimated_full:.0f}  "
+                  f"(update convergence_engine.py)")
         else:
-            deesc_curr_t0.append(score_curr)
-            deesc_alt_t0.append(score_alt)
+            print("  GDELT signal did not fire — cannot estimate SIGMOID_BETA from GDELT alone.")
+            print("  Set SIGMOID_BETA based on ADS-B + NOTAM scores after 6+ months of data.")
 
-    # Diagnosis 1: LIMIT 50 saturation
-    print("  ── Finding 1: Signal Saturation (LIMIT 50 + slow lambda) ──────────")
     print()
-    if esc_curr_t0:
-        avg_curr = sum(esc_curr_t0) / len(esc_curr_t0)
-        print(f"  Current design (λ=0.009, LIMIT 50):")
-        print(f"    Average T-0 escalation score: {avg_curr:.1f}")
-        print(f"    Score at 'quiet' period:       {results[0]['quiet_score_curr']:.1f}")
-        print(f"    Difference:                    {avg_curr - results[0]['quiet_score_curr']:.1f}")
-        print()
-        print("  PROBLEM: With λ=0.009 (77-day half-life) and LIMIT 50,")
-        print("  the Middle East always has 50+ qualifying events in any 30-day window.")
-        print("  Score is permanently saturated — no contrast between quiet and hot periods.")
-        print(f"  Current β=30 → P ≈ 100% always. Threshold is completely wrong.")
-        print()
-
-    # Diagnosis 2: Event density ratio
-    if esc_ratios:
-        avg_ratio = sum(esc_ratios) / len(esc_ratios)
-        print(f"  ── Finding 2: The Signal IS There (Event Density) ─────────────────")
-        print()
-        print(f"  Average event density ratio (event window / quiet baseline): {avg_ratio:.1f}×")
-        print(f"  → Escalation events cause a real spike in GDELT activity.")
-        print(f"  → The signal exists — it just needs a redesigned extraction method.")
-        print()
-
-    # Diagnosis 3: Alt lambda is better
-    if esc_alt_t0:
-        avg_alt    = sum(esc_alt_t0) / len(esc_alt_t0)
-        quiet_alt  = results[0]["quiet_score_alt"]
-        contrast   = avg_alt - quiet_alt
-        print(f"  ── Finding 3: Alternative Lambda (λ=0.10, 7-day half-life) ────────")
-        print()
-        print(f"  With λ=0.10, LIMIT 50:")
-        print(f"    Average T-0 escalation score: {avg_alt:.2f}")
-        print(f"    Quiet-period score:            {quiet_alt:.2f}")
-        print(f"    Contrast (signal above noise): {contrast:.2f}")
-        if contrast > 1.0:
-            print(f"  ✓ Lambda=0.10 creates meaningful signal/noise contrast")
-        else:
-            print(f"  △ Even λ=0.10 shows limited contrast — LIMIT 50 still saturates")
-        print()
-
-    # Recommendations
-    print(f"  ── Recommended Parameter Changes ───────────────────────────────────")
+    print("  ── Next steps ────────────────────────────────────────────────────")
     print()
-    print("  IN convergence_engine.py:")
-    print()
-    print("  1. Increase GDELT lambda:")
-    print("       LAMBDAS[\"gdelt_esc\"]   = 0.10  # was 0.009 (7-day half-life)")
-    print("       LAMBDAS[\"gdelt_deesc\"] = 0.10  # was 0.009")
-    print()
-    print("  2. Remove or raise LIMIT cap to allow density signal through:")
-    print("       Change: LIMIT 50 → LIMIT 500 in read_gdelt_signals() queries")
-    print("       OR weight events by num_articles so burst days dominate naturally")
-    print()
-    print("  3. Reduce S0 to prevent single-layer saturation:")
-    print("       S0[\"gdelt_escalation\"]   = 0.05  # was 4.0")
-    print("       S0[\"gdelt_deescalation\"] = 0.05  # was 4.0")
-    print("       → With λ=0.10, LIMIT 500, S0=0.05: a day with 500 events scores")
-    print("         500 × 0.05 = 25 on event day, decaying to ~9 by T-7")
-    print()
-    print("  4. SIGMOID_BETA should be set AFTER running this script with corrected")
-    print("     parameters. Run: python3 gdelt_backtest.py (with updated engine values)")
-    print("     then set β = average T-0 full-system score.")
-    print()
-    print("  5. Deeper fix (future): replace raw event count with a")
-    print("     z-score vs. 90-day rolling baseline per actor pair.")
-    print("     This would cleanly separate 'normal ME conflict noise' from spikes.")
-    print()
-    print("  ── What This Means for Trading ─────────────────────────────────────")
-    print()
-    print("  GDELT alone is NOT a reliable signal for the current system design.")
-    print("  It's always 'red' regardless of what's happening.")
-    print("  The ADS-B + NOTAM layers are currently the only discriminating signals.")
-    print("  Do not trade on convergence scores until lambda/S0 are corrected")
-    print("  and re-validated with this script.")
-    print()
-    print("  ── ADS-B / NOTAM back-test ─────────────────────────────────────────")
-    print()
-    print("  ADS-B and NOTAM data only exists from 2026-03-13 forward.")
-    print("  Run this script again after 6+ months of live collection to validate")
-    print("  those signal layers against any new events that occur.")
+    print("  1. If signal fired correctly above → apply parameter changes to")
+    print("     convergence_engine.py (already done if you see this after the update)")
+    print("  2. Re-run this script to confirm calibration")
+    print("  3. After 6+ months of live data, add ADS-B/NOTAM validation here")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="MarketSignal GDELT back-test")
+    parser = argparse.ArgumentParser(description="MarketSignal GDELT back-test (Goldstein avg)")
     parser.add_argument("--verbose",   action="store_true", help="Day-by-day tables")
     parser.add_argument("--calibrate", action="store_true", help="Calibration summary only")
     args = parser.parse_args()
@@ -474,21 +370,15 @@ def main():
         return
 
     date_range = conn.execute("SELECT MIN(event_date), MAX(event_date) FROM events").fetchone()
-    print(f"\nGDELT Back-test — MarketSignal")
+    print(f"\nGDELT Back-test — Goldstein Average Approach")
     print(f"Database: {total:,} events  |  {date_range[0]} → {date_range[1]}")
     print(f"Events to test: {len(KNOWN_EVENTS)}")
-    print(f"Quiet baseline: {QUIET_PERIOD[0]} → {QUIET_PERIOD[1]}")
-
-    # Compute quiet baselines (do once, shared across events)
-    print("\nComputing quiet-period baseline...", end=" ", flush=True)
-    esc_baseline   = compute_quiet_baseline(conn, "escalation")
-    deesc_baseline = compute_quiet_baseline(conn, "deescalation")
-    print("done.")
+    print(f"Signal: avg_goldstein(30d) vs avg_goldstein(prior 60d)  "
+          f"[S0={S0_PER_UNIT}/unit, floor=±{DELTA_FLOOR}]")
 
     results = []
     for event in KNOWN_EVENTS:
-        baseline = esc_baseline if event["track"] == "escalation" else deesc_baseline
-        result = analyse_event(conn, event, baseline, verbose=args.verbose)
+        result = analyse_event(conn, event)
         results.append(result)
 
     if not args.calibrate:
@@ -496,7 +386,6 @@ def main():
             print_event_result(result, verbose=args.verbose)
 
     print_calibration_summary(results)
-
     conn.close()
 
 

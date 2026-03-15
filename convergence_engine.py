@@ -492,85 +492,90 @@ def read_route_suspensions(route_conn):
 
 def read_gdelt_signals(gdelt_conn):
     """
-    GDELT ground truth — recent high-magnitude events.
-    Escalation:    Goldstein < -5, root codes 14–20
-    De-escalation: Goldstein > 5,  root codes 03–08
-    These are Events with slow decay (72h half-life).
+    GDELT Goldstein average signal.
+
+    Computes the average Goldstein scale across all ME events in the last 30 days
+    and compares it against the prior 60-day baseline. A drop in average (more
+    negative) = escalation; a rise (more positive) = de-escalation.
+
+    This is a State signal — it reflects current conditions without decay.
+    Replaces the old count-based approach which permanently saturated.
+
+    Note: S0["gdelt_escalation"] is now score-per-unit-of-Goldstein-delta,
+    not a fixed initial weight.
     """
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=SIGNAL_WINDOW_DAYS)).strftime("%Y%m%d")
-    signals = []
+    today      = datetime.now(timezone.utc)
+    win_start  = (today - timedelta(days=30)).strftime("%Y%m%d")
+    win_end    = today.strftime("%Y%m%d")
+    base_start = (today - timedelta(days=90)).strftime("%Y%m%d")
+    base_end   = (today - timedelta(days=31)).strftime("%Y%m%d")
 
-    # Escalation
+    DELTA_FLOOR = 0.30   # minimum delta to fire (below this = normal variation)
+
     try:
-        rows = gdelt_conn.execute("""
-            SELECT EventCode, GoldsteinScale, SQLDATE, Actor1CountryCode, Actor2CountryCode
+        row_win = gdelt_conn.execute("""
+            SELECT AVG(goldstein_scale), COUNT(*)
             FROM events
-            WHERE SQLDATE > ?
-              AND GoldsteinScale < -5
-              AND CAST(SUBSTR(EventCode, 1, 2) AS INTEGER) BETWEEN 14 AND 20
-            ORDER BY GoldsteinScale ASC
-            LIMIT 50
-        """, (cutoff,)).fetchall()
+            WHERE event_date BETWEEN ? AND ?
+        """, (win_start, win_end)).fetchone()
 
-        for code, goldstein, sqldate, a1, a2 in rows:
-            date_str = f"{sqldate[:4]}-{sqldate[4:6]}-{sqldate[6:8]}T12:00:00+00:00"
-            s0    = S0["gdelt_escalation"]
-            score = event_score(s0, "gdelt_esc", date_str)
-            if score < 0.01:
-                continue
-            signals.append({
-                "type": "gdelt_escalation",
-                "signal_class": "event",
-                "category": "gdelt_esc",
-                "track": "escalation",
-                "region": f"{a1 or '?'}-{a2 or '?'}",
-                "region_label": f"GDELT {a1 or '?'}/{a2 or '?'}",
-                "s0": s0,
-                "score": score,
-                "first_detected_at": date_str,
-                "last_confirmed_at": date_str,
-                "resolved_at": None,
-                "detail": f"code={code} goldstein={goldstein}",
-            })
-    except Exception as e:
-        print(f"  [GDELT] Escalation query error: {e}")
-
-    # De-escalation
-    try:
-        rows = gdelt_conn.execute("""
-            SELECT EventCode, GoldsteinScale, SQLDATE, Actor1CountryCode, Actor2CountryCode
+        row_base = gdelt_conn.execute("""
+            SELECT AVG(goldstein_scale), COUNT(*)
             FROM events
-            WHERE SQLDATE > ?
-              AND GoldsteinScale > 5
-              AND CAST(SUBSTR(EventCode, 1, 2) AS INTEGER) BETWEEN 3 AND 8
-            ORDER BY GoldsteinScale DESC
-            LIMIT 50
-        """, (cutoff,)).fetchall()
+            WHERE event_date BETWEEN ? AND ?
+        """, (base_start, base_end)).fetchone()
 
-        for code, goldstein, sqldate, a1, a2 in rows:
-            date_str = f"{sqldate[:4]}-{sqldate[4:6]}-{sqldate[6:8]}T12:00:00+00:00"
-            s0    = S0["gdelt_deescalation"]
-            score = event_score(s0, "gdelt_deesc", date_str)
-            if score < 0.01:
-                continue
+        avg_win,  count_win  = row_win
+        avg_base, count_base = row_base
+
+        if not avg_win or not avg_base or count_win < 50 or count_base < 50:
+            return []
+
+        delta   = avg_win - avg_base   # negative = more hostile, positive = more cooperative
+        now_str = today.isoformat()
+        signals = []
+
+        if delta < -DELTA_FLOOR:
+            score = S0["gdelt_escalation"] * (-delta - DELTA_FLOOR)
             signals.append({
-                "type": "gdelt_deescalation",
-                "signal_class": "event",
-                "category": "gdelt_deesc",
-                "track": "deescalation",
-                "region": f"{a1 or '?'}-{a2 or '?'}",
-                "region_label": f"GDELT {a1 or '?'}/{a2 or '?'}",
-                "s0": s0,
-                "score": score,
-                "first_detected_at": date_str,
-                "last_confirmed_at": date_str,
-                "resolved_at": None,
-                "detail": f"code={code} goldstein={goldstein}",
+                "type":             "gdelt_escalation",
+                "signal_class":     "state",
+                "category":         "gdelt_esc",
+                "track":            "escalation",
+                "region":           "ME",
+                "region_label":     "GDELT Middle East",
+                "s0":               S0["gdelt_escalation"],
+                "score":            score,
+                "first_detected_at": win_start,
+                "last_confirmed_at": now_str,
+                "resolved_at":      None,
+                "detail": (f"avg_30d={avg_win:.3f}  baseline={avg_base:.3f}  "
+                           f"Δ={delta:+.3f}  n={count_win:,}"),
             })
-    except Exception as e:
-        print(f"  [GDELT] De-escalation query error: {e}")
 
-    return signals
+        if delta > DELTA_FLOOR:
+            score = S0["gdelt_deescalation"] * (delta - DELTA_FLOOR)
+            signals.append({
+                "type":             "gdelt_deescalation",
+                "signal_class":     "state",
+                "category":         "gdelt_deesc",
+                "track":            "deescalation",
+                "region":           "ME",
+                "region_label":     "GDELT Middle East",
+                "s0":               S0["gdelt_deescalation"],
+                "score":            score,
+                "first_detected_at": win_start,
+                "last_confirmed_at": now_str,
+                "resolved_at":      None,
+                "detail": (f"avg_30d={avg_win:.3f}  baseline={avg_base:.3f}  "
+                           f"Δ={delta:+.3f}  n={count_win:,}"),
+            })
+
+        return signals
+
+    except Exception as e:
+        print(f"  [GDELT] Query error: {e}")
+        return []
 
 
 # ── Scoring ────────────────────────────────────────────────────────────────────
