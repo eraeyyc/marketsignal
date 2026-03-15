@@ -287,7 +287,7 @@ else:
         st.plotly_chart(chart_raw_scores(history_df), use_container_width=True)
         st.caption(
             "Raw score = sum of all decayed signal weights. "
-            "The sigmoid converts this to a probability using β=30 (placeholder midpoint)."
+            "The sigmoid converts this to a probability using β=100 (placeholder midpoint)."
         )
 
 st.divider()
@@ -416,9 +416,10 @@ region simultaneously, the regional subtotal gets a 50% bonus. One signal could 
 Two independent signal types in the same place at the same time is harder to explain away.
 
 **Sigmoid normalisation:** the raw sum converts to 0–100% via:
-> P = 1 / (1 + e^(−0.08 × (score − 30)))
+> P = 1 / (1 + e^(−0.08 × (score − 100)))
 
-⚠ The midpoint β=30 is a placeholder. It will be replaced with the historically-derived
-value from the GDELT back-test, which will tell us what raw score preceded known escalation
-events in the 2023–2026 dataset.
+⚠ The midpoint β=100 is a rough calibration based on expected live signal stack size.
+It will be refined once 6+ months of real multi-layer data can be compared against known
+historical events. The GDELT back-test validates signal direction (correct 6/7 events)
+but cannot set β because GDELT alone contributes only ~1–5 pts of the total score.
 """)
