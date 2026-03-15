@@ -96,19 +96,18 @@ footer { visibility: hidden; }
 
 /* === SUBHEADERS === */
 h3 {
-    font-size: 11px !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.1em !important;
-    text-transform: uppercase !important;
-    color: #64748b !important;
-    border-bottom: 1px solid rgba(128,128,128,0.15);
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    letter-spacing: -0.01em !important;
+    color: #e2e8f0 !important;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
     padding-bottom: 8px;
     margin-bottom: 16px !important;
 }
 
 /* === DATAFRAME === */
 [data-testid="stDataFrame"] table {
-    font-size: 12px !important;
+    font-size: 13px !important;
 }
 [data-testid="stDataFrame"] td,
 [data-testid="stDataFrame"] th {
@@ -116,11 +115,10 @@ h3 {
     line-height: 1.4 !important;
 }
 [data-testid="stDataFrame"] th {
-    font-size: 10px !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.06em !important;
-    text-transform: uppercase !important;
-    color: #64748b !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.02em !important;
+    color: #94a3b8 !important;
     background: var(--secondary-background-color, rgba(128,128,128,0.05)) !important;
 }
 
@@ -151,11 +149,10 @@ hr[data-testid="stDivider"] {
     border-radius: 6px !important;
 }
 [data-testid="stExpander"] summary {
-    font-size: 11px !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.07em !important;
-    text-transform: uppercase !important;
-    color: #64748b !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.01em !important;
+    color: #94a3b8 !important;
 }
 
 /* === BUTTONS === */
