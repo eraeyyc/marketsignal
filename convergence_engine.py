@@ -103,9 +103,11 @@ S0 = {
 
 # Sigmoid normalisation parameters (β=midpoint, α=steepness)
 # ⚠ PLACEHOLDER — β should equal historical average convergence score from back-test
-SIGMOID_BETA  = 200.0  # midpoint: raw score at which probability = 0.50
-                       # raised 100→200: live baseline with type_surges + NOTAMs + spoofing
-                       # routinely sits at 150–200; β=100 was saturating to 100% too easily
+SIGMOID_BETA  = 100.0  # midpoint: raw score at which probability = 0.50
+                       # ⚠ needs calibration against historical multi-level signal data.
+                       # With active war (US/Israel strikes on Iran, Mar 2026), raw score
+                       # ~200 → P≈100% which is correct. Revisit β once 3+ months of
+                       # signal history spans different conflict levels (background → crisis).
 SIGMOID_ALPHA = 0.08   # steepness
 
 # Velocity (score acceleration) parameters
