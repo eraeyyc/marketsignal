@@ -40,6 +40,7 @@ ADSB_DB       = "adsb_events.db"
 NOTAM_DB      = "notam_events.db"
 GDELT_DB      = "gdelt_events.db"
 ROUTE_DB      = "route_events.db"
+AIS_DB        = "ais_events.db"
 ENGINE_DB     = "convergence_engine.db"
 
 POLL_INTERVAL = 600          # 10 minutes
@@ -61,6 +62,8 @@ LAMBDAS = {
     "deesc_notam_lift":0.35,
     "gdelt_deesc":     0.009,
     "gdelt_esc":       0.009,
+    "ais_tanker":      0.04,
+    "ais_military":    0.06,
 }
 
 # ── S_0 initial weights ────────────────────────────────────────────────────────
@@ -88,6 +91,10 @@ S0 = {
     "notam_high":            5.0,
     "gdelt_escalation":      4.0,
     "gdelt_deescalation":    4.0,
+    "ais_tanker_medium":     6.0,
+    "ais_tanker_high":      12.0,
+    "ais_military_high":    14.0,
+    "ais_watchlist":         8.0,
 }
 
 # Sigmoid normalisation parameters (β=midpoint, α=steepness)
@@ -525,6 +532,111 @@ def read_route_suspensions(route_conn):
     return signals
 
 
+def read_ais_anomalies(ais_conn):
+    """
+    AIS maritime anomalies — Events.
+
+    Two signal types:
+      - tanker/cargo density drop  → escalation (vessels rerouting / avoiding)
+      - military vessel surge      → escalation
+    One signal per (region, category), most recent unresolved anomaly wins.
+    Also emits a signal for each watchlist vessel sighting in the last 24h.
+    """
+    signals = []
+
+    # ── Density anomalies ────────────────────────────────────────────────────
+    try:
+        rows = ais_conn.execute("""
+            SELECT region, region_label, category, anomaly_type, severity,
+                   detected_at, last_confirmed_at, resolved_at,
+                   baseline_count, observed_count, drop_pct
+            FROM vessel_anomalies
+            WHERE detected_at > ?
+            ORDER BY detected_at DESC
+        """, (_cutoff(),)).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+
+    seen = {}
+    for region, region_label, category, anomaly_type, severity, \
+            detected_at, lca, resolved_at, baseline, observed, drop_pct in rows:
+        key = (region, category)
+        if key in seen:
+            continue
+        seen[key] = True
+
+        sev = (severity or "MEDIUM").upper()
+        if category == "military":
+            s0  = S0.get("ais_military_high", 14.0)
+            lam = "ais_military"
+        elif sev == "HIGH":
+            s0  = S0.get("ais_tanker_high", 12.0)
+            lam = "ais_tanker"
+        else:
+            s0  = S0.get("ais_tanker_medium", 6.0)
+            lam = "ais_tanker"
+
+        score = event_score(s0, lam, lca or detected_at)
+        if score < 0.01:
+            continue
+
+        signals.append({
+            "type":             "ais_anomaly",
+            "signal_class":     "event",
+            "category":         "maritime",
+            "track":            "escalation",
+            "region":           region,
+            "region_label":     region_label or region,
+            "s0":               s0,
+            "score":            score,
+            "first_detected_at": detected_at,
+            "last_confirmed_at": lca or detected_at,
+            "resolved_at":      resolved_at,
+            "severity":         severity,
+            "detail":           f"{category} | {anomaly_type} | {severity}",
+        })
+
+    # ── Watchlist sightings (last 24h) ───────────────────────────────────────
+    try:
+        cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        rows_w = ais_conn.execute("""
+            SELECT mmsi, vessel_name, country, operator, region, region_label, detected_at
+            FROM vessel_sightings
+            WHERE detected_at > ?
+              AND signal_value = 'WATCHLIST'
+            ORDER BY detected_at DESC
+        """, (cutoff_24h,)).fetchall()
+    except sqlite3.OperationalError:
+        rows_w = []
+
+    seen_mmsi = {}
+    for mmsi, name, country, operator, region, region_label, detected_at in rows_w:
+        if mmsi in seen_mmsi:
+            continue
+        seen_mmsi[mmsi] = True
+        s0    = S0.get("ais_watchlist", 8.0)
+        score = event_score(s0, "ais_military", detected_at)
+        if score < 0.01:
+            continue
+        signals.append({
+            "type":             "ais_watchlist",
+            "signal_class":     "event",
+            "category":         "maritime",
+            "track":            "escalation",
+            "region":           region or "ME",
+            "region_label":     region_label or region or "ME",
+            "s0":               s0,
+            "score":            score,
+            "first_detected_at": detected_at,
+            "last_confirmed_at": detected_at,
+            "resolved_at":      None,
+            "severity":         "HIGH",
+            "detail":           f"{name or mmsi} | {operator or country}",
+        })
+
+    return signals
+
+
 def read_gdelt_signals(gdelt_conn):
     """
     GDELT Goldstein average signal.
@@ -737,6 +849,7 @@ def compute(verbose=True):
     notam_conn  = sqlite3.connect(f"file:{NOTAM_DB}?mode=ro",  uri=True) if os.path.exists(NOTAM_DB)  else None
     gdelt_conn  = sqlite3.connect(f"file:{GDELT_DB}?mode=ro",  uri=True) if os.path.exists(GDELT_DB)  else None
     route_conn  = sqlite3.connect(f"file:{ROUTE_DB}?mode=ro",  uri=True) if os.path.exists(ROUTE_DB)  else None
+    ais_conn    = sqlite3.connect(f"file:{AIS_DB}?mode=ro",    uri=True) if os.path.exists(AIS_DB)    else None
     engine_conn = init_engine_db()
 
     signals = []
@@ -756,6 +869,10 @@ def compute(verbose=True):
     if route_conn:
         signals += read_route_suspensions(route_conn)
         route_conn.close()
+
+    if ais_conn:
+        signals += read_ais_anomalies(ais_conn)
+        ais_conn.close()
 
     if gdelt_conn:
         signals += read_gdelt_signals(gdelt_conn)

@@ -81,7 +81,7 @@ service quietly before governments announce closures.
 - Airport pairs monitored (both directions): TLV, AMM, BGW, KWI, BAH, DOH, DXB,
   AUH, MCT, IKA, THR, BEY, CAI, IST
 
-### Stage 3: Convergence Engine — DONE ✓
+### Stage 3: Convergence Engine — DONE ✓ (AIS wired in 2026-03-15)
 Single scoring daemon that reads all signal tables and outputs escalation +
 de-escalation scores every 10 minutes.
 - `convergence_engine.py` — main daemon
@@ -104,9 +104,13 @@ de-escalation scores every 10 minutes.
   Raised SIGMOID_BETA 30→100. Was producing P=100% from 195 spurious signals.
 - **⚠ S_0 weights are placeholders** — must be calibrated via GDELT back-test
 - **⚠ Sigmoid β=100 is a rough calibration** — refine after back-test
+- **AIS signals wired in:** tanker/cargo density drops + military surges + watchlist sightings
+  → S0: ais_tanker_medium 6.0 | ais_tanker_high 12.0 | ais_military_high 14.0 | ais_watchlist 8.0
+  → λ: ais_tanker 0.04/day | ais_military 0.06/day
 - Run with: `python3 convergence_engine.py --loop`
 - Check signals: `python3 convergence_engine.py --signals`
 - Outputs to: `convergence_engine.db`
+- Systemd: `convergence-engine.service` (deploy/convergence-engine.service)
 
 ### Schema: last_confirmed_at + resolved_at — DONE ✓
 All signal tables have `last_confirmed_at` (updated each poll while active) and
@@ -185,7 +189,7 @@ AIS vessel tracking via aisstream.io WebSocket stream.
 - **Baseline needs ~7 days** before anomaly detection activates
 - **Future:** add event volume weighting to GDELT signal; satellite AIS for Arabian Sea gaps
 
-### Stage 4: Polymarket Integration
+### Stage 4: Polymarket Integration — IN PROGRESS
 Surface relevant prediction markets, suggest position sizing based on convergence
 score. Human makes the final trading decision. Look for "incongruent markets" —
 high convergence score but low Polymarket probability = entry point.
@@ -211,7 +215,7 @@ streamlit run dashboard.py              # Dashboard at localhost:8501
 systemctl start adsb-collector
 systemctl start notam-collector
 systemctl start marketsignal-dashboard
-# convergence-engine service file not yet written — run manually for now
+systemctl start convergence-engine
 
 # Logs
 tail -f /var/log/marketsignal/adsb.log

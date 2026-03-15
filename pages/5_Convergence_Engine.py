@@ -174,6 +174,8 @@ SIGNAL_TYPE_LABELS = {
     "bizjet_cluster":     "Bizjet Cluster",
     "notam_restriction":  "NOTAM Restriction",
     "route_suspension":   "Route Suspension",
+    "ais_anomaly":        "Maritime Density Anomaly",
+    "ais_watchlist":      "Maritime Watchlist Vessel",
     "gdelt_escalation":   "GDELT Escalation",
     "gdelt_deescalation": "GDELT De-escalation",
 }
