@@ -33,7 +33,7 @@ BASELINE_DAYS = 60     # days to use as baseline (days 31–90 before eval date)
 WINDOW_DAYS   = 30     # rolling signal window
 
 # Sigmoid params (convergence_engine.py values)
-SIGMOID_BETA  = 30.0
+SIGMOID_BETA  = 100.0
 SIGMOID_ALPHA = 0.08
 
 # ── Known historical events ────────────────────────────────────────────────────

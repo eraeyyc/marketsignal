@@ -92,14 +92,18 @@ de-escalation scores every 10 minutes.
   - ISR (`isr`) and command (`command`) category VIP aircraft use State logic —
     an E-11A BACN active for 12h is infrastructure, not a one-off event
 - **S_0 weights:** isr_high 20.0 | command_high 22.0 | going_dark 15.0 |
-  notam_high 14.0 | strategic_lift_high 16.0 | vip_sighting 5.0
+  notam_high 5.0 | strategic_lift_high 16.0 | vip_sighting 5.0
 - **Lambda values (per day):** strategic_lift 0.03 | tanker 0.04 | ISR 0.06 |
   bizjet 0.10 | route_suspension 0.12 | NOTAM 0.35 | going_dark 0.60
 - **Coherence multiplier** (1.5×): fires only when 2+ signals in same region both score > 2.0
-- **Sigmoid normalisation** → 0–1 probability for Polymarket comparison
+- **Sigmoid normalisation** → 0–1 probability for Polymarket comparison; β=100
 - **Divergence detection:** flags when GDELT and physical signals contradict each other
+- **NOTAM signal fix (2026-03-15):** Cirium bounding box returns non-ME FIRs (Romania,
+  Russia, Greece, India). Added ME FIR whitelist (19 FIRs). Deduplicate by FIR not
+  notam_id — one signal per FIR, worst severity. Reduced notam_high 14→5, notam_medium 7→3.
+  Raised SIGMOID_BETA 30→100. Was producing P=100% from 195 spurious signals.
 - **⚠ S_0 weights are placeholders** — must be calibrated via GDELT back-test
-- **⚠ Sigmoid β=30 is a placeholder** — set to historical average score after back-test
+- **⚠ Sigmoid β=100 is a rough calibration** — refine after back-test
 - Run with: `python3 convergence_engine.py --loop`
 - Check signals: `python3 convergence_engine.py --signals`
 - Outputs to: `convergence_engine.db`
