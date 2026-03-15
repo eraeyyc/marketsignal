@@ -50,8 +50,8 @@ API_KEY = os.environ.get("AISSTREAM_API_KEY", "")
 # aisstream.io WebSocket endpoint
 WS_URL = "wss://stream.aisstream.io/v0/stream"
 
-# Bounding box covering entire ME maritime zone [lon_min, lat_min], [lon_max, lat_max]
-ME_BBOX = [[[30.0, 8.0], [72.0, 32.0]]]
+# Bounding box covering entire ME maritime zone [[lat_min, lon_min], [lat_max, lon_max]]
+ME_BBOX = [[[8.0, 30.0], [32.0, 72.0]]]
 
 # ── Regions ────────────────────────────────────────────────────────────────────
 
