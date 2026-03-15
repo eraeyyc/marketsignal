@@ -160,7 +160,7 @@ def chart_score_history(df):
     fig.update_layout(**plotly_layout(
         height=320,
         yaxis=dict(title="Probability %", range=[0, 100], **axis_style()),
-        yaxis2=dict(title="Signal count", gridcolor="rgba(0,0,0,0)", **axis_style()),
+        yaxis2=dict(title="Signal count", **axis_style(gridcolor="rgba(0,0,0,0)")),
     ))
     return fig
 
