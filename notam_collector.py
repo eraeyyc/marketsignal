@@ -240,7 +240,7 @@ def save_notam(conn, feature):
 
 
 def flag_anomaly(conn, feature, severity):
-    """Insert a new restriction NOTAM into notam_anomalies."""
+    """Upsert a restriction NOTAM into notam_anomalies. Updates last_confirmed_at if already active."""
     p = feature.get("properties") or {}
 
     number   = p.get("number", "")
@@ -250,29 +250,42 @@ def flag_anomaly(conn, feature, severity):
     label, _ = qcode_label(qcode)
     now      = datetime.now(timezone.utc).isoformat()
 
-    conn.execute("""
-        INSERT INTO notam_anomalies
-            (detected_at, notam_id, location, country_code,
-             qcode, restriction_type,
-             lat, lon, radius_nm,
-             effective_start, effective_end,
-             raw_text, anomaly_type, severity)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new_restriction', ?)
-    """, (
-        now,
-        notam_id,
-        p.get("location") or p.get("affectedAerodrome"),
-        p.get("countryCode"),
-        qcode,
-        label,
-        p.get("lat"),
-        p.get("lon"),
-        p.get("radius"),
-        p.get("effectiveStart"),
-        p.get("effectiveEnd"),
-        p.get("text"),
-        severity,
-    ))
+    existing = conn.execute("""
+        SELECT id FROM notam_anomalies
+        WHERE notam_id = ? AND resolved_at IS NULL
+        ORDER BY detected_at DESC LIMIT 1
+    """, (notam_id,)).fetchone()
+
+    if existing:
+        conn.execute(
+            "UPDATE notam_anomalies SET last_confirmed_at = ? WHERE id = ?",
+            (now, existing[0])
+        )
+    else:
+        conn.execute("""
+            INSERT INTO notam_anomalies
+                (detected_at, notam_id, location, country_code,
+                 qcode, restriction_type,
+                 lat, lon, radius_nm,
+                 effective_start, effective_end,
+                 raw_text, anomaly_type, severity, last_confirmed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new_restriction', ?, ?)
+        """, (
+            now,
+            notam_id,
+            p.get("location") or p.get("affectedAerodrome"),
+            p.get("countryCode"),
+            qcode,
+            label,
+            p.get("lat"),
+            p.get("lon"),
+            p.get("radius"),
+            p.get("effectiveStart"),
+            p.get("effectiveEnd"),
+            p.get("text"),
+            severity,
+            now,
+        ))
 
 
 # ── Poll ───────────────────────────────────────────────────────────────────────
@@ -305,6 +318,22 @@ def poll(conn):
 
     for feat, severity in new_restrictions:
         flag_anomaly(conn, feat, severity)
+
+    # Resolve anomalies for NOTAMs no longer returned by the API
+    now = datetime.now(timezone.utc).isoformat()
+    seen_ids = set()
+    for feat in features:
+        p = feat.get("properties") or {}
+        number = p.get("number", "")
+        year   = p.get("year", "")
+        seen_ids.add(f"{number}/{year}" if year else str(number))
+
+    active = conn.execute(
+        "SELECT id, notam_id FROM notam_anomalies WHERE resolved_at IS NULL"
+    ).fetchall()
+    for row_id, notam_id in active:
+        if notam_id not in seen_ids:
+            conn.execute("UPDATE notam_anomalies SET resolved_at = ? WHERE id = ?", (now, row_id))
 
     conn.commit()
 

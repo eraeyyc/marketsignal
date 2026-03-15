@@ -541,14 +541,33 @@ def check_anomalies(conn):
 
         if severity:
             flags.append((region, label, current, avg_baseline, drop_pct, severity))
-            conn.execute("""
-                INSERT INTO anomalies
-                    (detected_at, region, region_label, current_count, baseline_avg, drop_pct, severity)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                datetime.now(timezone.utc).isoformat(),
-                region, label, current, avg_baseline, round(drop_pct, 3), severity
-            ))
+            now = datetime.now(timezone.utc).isoformat()
+            existing = conn.execute("""
+                SELECT id FROM anomalies
+                WHERE region = ? AND resolved_at IS NULL
+                ORDER BY detected_at DESC LIMIT 1
+            """, (region,)).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE anomalies SET last_confirmed_at = ?, current_count = ?, severity = ? WHERE id = ?",
+                    (now, current, severity, existing[0])
+                )
+            else:
+                conn.execute("""
+                    INSERT INTO anomalies
+                        (detected_at, region, region_label, current_count, baseline_avg, drop_pct, severity, last_confirmed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (now, region, label, current, avg_baseline, round(drop_pct, 3), severity, now))
+
+    # Resolve any active anomalies whose region was not flagged this poll
+    now = datetime.now(timezone.utc).isoformat()
+    flagged_regions = [f[0] for f in flags]
+    active = conn.execute(
+        "SELECT id, region FROM anomalies WHERE resolved_at IS NULL"
+    ).fetchall()
+    for row_id, region in active:
+        if region not in flagged_regions:
+            conn.execute("UPDATE anomalies SET resolved_at = ? WHERE id = ?", (now, row_id))
 
     conn.commit()
 
@@ -751,19 +770,41 @@ def process_type_watch(conn, region_id, region_label, aircraft):
         if sigma < 2.0:
             continue
         severity = "HIGH" if sigma >= 3.0 else "MEDIUM"
-        conn.execute("""
-            INSERT INTO type_anomalies
-                (detected_at, region, region_label, category,
-                 current_count, baseline_mean, baseline_std, sigma_above,
-                 severity, aircraft_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            now_str, region_id, region_label, cat,
-            count, round(mean, 2), round(std, 2), round(sigma, 2),
-            severity, json.dumps(cat_aircraft[cat]),
-        ))
+        existing = conn.execute("""
+            SELECT id FROM type_anomalies
+            WHERE region = ? AND category = ? AND resolved_at IS NULL
+            ORDER BY detected_at DESC LIMIT 1
+        """, (region_id, cat)).fetchone()
+        if existing:
+            conn.execute("""
+                UPDATE type_anomalies
+                SET last_confirmed_at = ?, current_count = ?, sigma_above = ?, severity = ?, aircraft_seen = ?
+                WHERE id = ?
+            """, (now_str, count, round(sigma, 2), severity, json.dumps(cat_aircraft[cat]), existing[0]))
+        else:
+            conn.execute("""
+                INSERT INTO type_anomalies
+                    (detected_at, region, region_label, category,
+                     current_count, baseline_mean, baseline_std, sigma_above,
+                     severity, aircraft_seen, last_confirmed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                now_str, region_id, region_label, cat,
+                count, round(mean, 2), round(std, 2), round(sigma, 2),
+                severity, json.dumps(cat_aircraft[cat]), now_str,
+            ))
         flagged.append((cat, count, sigma, severity))
         print(f"  [TYPE {severity}] {region_label} — {cat}: {count} aircraft ({sigma:.1f}σ above baseline)")
+
+    # Resolve active type anomalies for this region that weren't flagged this poll
+    flagged_cats = [f[0] for f in flagged]
+    active = conn.execute("""
+        SELECT id, category FROM type_anomalies
+        WHERE region = ? AND resolved_at IS NULL
+    """, (region_id,)).fetchall()
+    for row_id, cat in active:
+        if cat not in flagged_cats:
+            conn.execute("UPDATE type_anomalies SET resolved_at = ? WHERE id = ?", (now_str, row_id))
 
     conn.commit()
     return cat_counts
@@ -794,17 +835,40 @@ def check_bizjet_clusters(conn, all_region_aircraft):
     for bj in bizjets:
         by_airport[bj["airport"]].append(bj)
 
+    active_airports = []
     for (ap_name, ap_icao), jets in by_airport.items():
         countries = {j["country"] for j in jets if j["country"]}
         if len(jets) >= BIZJET_CLUSTER_MIN and len(countries) >= 2:
             aircraft_data = [[j["icao24"], j["typecode"], j["country"], j["lat"], j["lon"]] for j in jets]
-            conn.execute("""
-                INSERT INTO bizjet_clusters
-                    (detected_at, airport_name, airport_icao, bizjet_count, countries, aircraft_json)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (now, ap_name, ap_icao, len(jets), json.dumps(sorted(countries)), json.dumps(aircraft_data)))
+            active_airports.append(ap_icao)
+            existing = conn.execute("""
+                SELECT id FROM bizjet_clusters
+                WHERE airport_icao = ? AND resolved_at IS NULL
+                ORDER BY detected_at DESC LIMIT 1
+            """, (ap_icao,)).fetchone()
+            if existing:
+                conn.execute("""
+                    UPDATE bizjet_clusters
+                    SET last_confirmed_at = ?, bizjet_count = ?, countries = ?, aircraft_json = ?
+                    WHERE id = ?
+                """, (now, len(jets), json.dumps(sorted(countries)), json.dumps(aircraft_data), existing[0]))
+            else:
+                conn.execute("""
+                    INSERT INTO bizjet_clusters
+                        (detected_at, airport_name, airport_icao, bizjet_count, countries, aircraft_json, last_confirmed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (now, ap_name, ap_icao, len(jets), json.dumps(sorted(countries)), json.dumps(aircraft_data), now))
             conn.commit()
             print(f"  [BIZJET CLUSTER] {ap_name} ({ap_icao}) — {len(jets)} bizjets from: {', '.join(sorted(countries))}")
+
+    # Resolve clusters no longer active this poll
+    active_rows = conn.execute(
+        "SELECT id, airport_icao FROM bizjet_clusters WHERE resolved_at IS NULL"
+    ).fetchall()
+    for row_id, ap_icao in active_rows:
+        if ap_icao not in active_airports:
+            conn.execute("UPDATE bizjet_clusters SET resolved_at = ? WHERE id = ?", (now, row_id))
+    conn.commit()
 
 
 # ── Poll ───────────────────────────────────────────────────────────────────────
