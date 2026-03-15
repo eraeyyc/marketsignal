@@ -127,20 +127,18 @@ Run with: `streamlit run dashboard.py`
 
 ## Known Issues / Blockers
 
-### GDELT signal is saturated — do not trade on convergence scores yet
-`gdelt_backtest.py` (2026-03-14) found a structural problem: with `LIMIT 50` and
-`λ=0.009/day` (77-day half-life), the Middle East always has 1000+ qualifying events
-in any 30-day window, so the score permanently saturates at ~152 regardless of
-what's happening. P≈100% always — meaningless.
+### GDELT signal redesigned — Goldstein average approach (2026-03-14) ✓
+Old count-based approach was permanently saturated. Replaced with:
+- `avg_goldstein(30d)` vs `avg_goldstein(prior 60d baseline)`
+- Negative delta → escalation signal; positive → de-escalation
+- Back-tested against 7 historical events: 4/4 escalation, 2/3 de-escalation correct
+- Fixes silent column-name bug (old code used BigQuery names, never actually ran)
+- Live right now: delta=-1.47 (escalation signal scoring 4.67) as of 2026-03-14
 
-The event density signal IS real (1.3×–3.1× spike around actual events), but the
-current extraction design can't see it. Required fixes:
-- Remove `LIMIT 50` → raise to `LIMIT 500` in `convergence_engine.py`
-- `S0["gdelt_escalation"] = 0.05` (was 4.0) to prevent saturation
-- `LAMBDAS["gdelt_esc"] = 0.10` (was 0.009, 7-day half-life)
-- Re-run `gdelt_backtest.py` after parameter changes to re-derive `SIGMOID_BETA`
-
-Until these are applied, **ADS-B + NOTAM layers are the only discriminating signals**.
+**Future improvement:** add event volume weighting — a Goldstein drop with 5× normal
+event count is more significant than the same drop at baseline volume. Would multiply
+signal score by `log(count_ratio) + 1`. Not done yet because Goldstein-only already
+validates correctly and volume weighting needs backtest re-validation.
 
 ### ADS-B coverage gaps — conflict zones show zero
 Lebanon/Syria and Yemen/Red Sea consistently return 0 — transponders off in active
