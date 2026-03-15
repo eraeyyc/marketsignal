@@ -1,5 +1,5 @@
 # MarketSignal — Project Status
-Last updated: 2026-03-13
+Last updated: 2026-03-15
 
 ---
 
@@ -148,16 +148,29 @@ validates correctly and volume weighting needs backtest re-validation.
 Lebanon/Syria and Yemen/Red Sea consistently return 0 — transponders off in active
 conflict zones. Expected, but limits coverage in key areas.
 
-### VIP watchlist — 21 of 49 aircraft missing ICAO24
-Still need manual lookup for: Air Force One (VC-25A), most C-32A fleet, C-37B/C-40B,
-Bahrain/Oman royal flights, Egyptian A340. Use ADS-B Exchange or Flightradar24
-historical playback to find codes.
+### VIP watchlist — 7 of 49 aircraft still missing ICAO24 (2026-03-15)
+42/49 now trackable after manual lookup transfer from VIP Aircraft-updates.csv.
+Still missing: Bulgarian LZ-001, USAF C-37Bs x2, C-17, RC-12, Chinese IL-76, Austrian 4D-MNE.
+Use ADS-B Exchange or Flightradar24 historical playback to find codes.
+
+---
+
+### Convergence engine — P=100% bug fixed (2026-03-15) ✓
+Root cause: Cirium bounding box returns NOTAMs from non-ME FIRs (Romania, Russia,
+Greece, India). 195 spurious NOTAM signals were each scoring individually.
+Fixes applied:
+- ME FIR whitelist (19 FIRs) — non-ME FIRs now excluded
+- Deduplicate by FIR location, not notam_id — one signal per FIR, worst severity
+- notam_high S₀: 14→5, notam_medium S₀: 7→3
+- SIGMOID_BETA: 30→100 (was saturating at tiny scores)
+- Dashboard explainer updated to reflect β=100 and GDELT backtest findings
+- gdelt_backtest.py SIGMOID_BETA synced to 100
 
 ---
 
 ## What's Planned But Not Started
 
-### Stage 2d: Maritime / AIS Layer — DONE ✓ (pending API key + first run)
+### Stage 2d: Maritime / AIS Layer — DONE ✓ (pending first run)
 AIS vessel tracking via aisstream.io WebSocket stream.
 - `ais_collector.py` — streams 10 min every 30 min, stores to `ais_events.db`
 - 5 regions: Persian Gulf, Strait of Hormuz, Red Sea, Gulf of Aden, Arabian Sea
