@@ -400,6 +400,8 @@ def _collector_status(ts_str, stale_minutes=30):
         return "offline"
     try:
         last = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
         age  = (datetime.now(timezone.utc) - last).total_seconds() / 60
         return "live" if age < stale_minutes else "stale"
     except Exception:
