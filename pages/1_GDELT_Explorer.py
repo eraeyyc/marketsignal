@@ -183,7 +183,7 @@ def chart_timeline(df):
         ),
         secondary_y=True,
     )
-    fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.25)", secondary_y=True)
+    fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.25)", yref="y2")
 
     fig.update_layout(**plotly_layout(height=360, bargap=0.1))
     fig.update_yaxes(title_text="Events / day", secondary_y=False, **axis_style())

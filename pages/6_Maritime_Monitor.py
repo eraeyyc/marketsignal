@@ -8,13 +8,16 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import plotly.express as px
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.styles import inject_css, page_header
 from datetime import datetime, timezone, timedelta
 
 DB_PATH = "ais_events.db"
 
-st.set_page_config(page_title="Maritime Monitor", layout="wide")
-st.title("Maritime Monitor")
-st.caption("AIS vessel tracking — Middle East maritime zone via aisstream.io")
+st.set_page_config(page_title="MarketSignal — Maritime Monitor", layout="wide",
+                   initial_sidebar_state="collapsed")
+inject_css()
 
 # ── Data loaders ───────────────────────────────────────────────────────────────
 
@@ -134,6 +137,9 @@ total_snaps, first_snap, last_snap = load_meta()
 anomalies_df = load_active_anomalies()
 spoofing_df  = load_spoofing()
 
+page_header("Maritime Monitor", "AIS vessel tracking — Middle East via aisstream.io",
+            timestamp=f"Last update: {last_snap[:16] if last_snap else '—'} UTC")
+
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Active Anomalies",   len(anomalies_df))
 col2.metric("Spoofing Events (7d)", len(spoofing_df))
@@ -187,10 +193,12 @@ else:
     fig = px.line(
         filtered, x="Time", y="Count", color="Region",
         facet_col="Category", facet_col_wrap=2,
-        title="Vessel counts by region and category",
-        height=400,
+        height=400, template="plotly_dark",
     )
-    fig.update_layout(margin=dict(t=40, b=20))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=0, r=0, t=30, b=0),
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 st.divider()
@@ -214,14 +222,18 @@ else:
             hover_name="Vessel",
             hover_data={"MMSI": True, "Operator": True, "SOG (kn)": True, "Region": True},
             color="Category",
-            title="Watchlist vessel positions",
             projection="natural earth",
+            template="plotly_dark",
         )
         fig_map.update_geos(
             center={"lat": 22, "lon": 55},
             projection_scale=4,
-            showland=True, landcolor="LightGray",
-            showocean=True, oceancolor="LightBlue",
+            showland=True, landcolor="#2d3748",
+            showocean=True, oceancolor="#1a202c",
+        )
+        fig_map.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=0, r=0, t=10, b=0),
         )
         st.plotly_chart(fig_map, use_container_width=True)
 

@@ -155,7 +155,7 @@ def chart_score_history(df):
         hovertemplate="%{x|%H:%M}<br>Signals: %{y}<extra></extra>",
     ), secondary_y=True)
 
-    fig.add_hline(y=50, line_dash="dot", line_color="rgba(255,255,255,0.2)", secondary_y=False)
+    fig.add_hline(y=50, line_dash="dot", line_color="rgba(255,255,255,0.2)")
 
     fig.update_layout(**plotly_layout(
         height=320,
