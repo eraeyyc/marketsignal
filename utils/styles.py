@@ -47,11 +47,6 @@ _TEXT_MID = "#64748b"   # readable on both white and dark backgrounds
 
 _CSS = """
 <style>
-/* === FONT === */
-body, p, div, span, td, th, label, input, select, textarea, button {
-    font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
-}
-
 /* === HIDE STREAMLIT CHROME === */
 footer { visibility: hidden; }
 .stDeployButton { display: none; }
@@ -174,7 +169,7 @@ def inject_css():
 
 _PLOTLY_BASE = dict(
     template="plotly_dark",
-    font=dict(family="Inter, system-ui, sans-serif", size=12, color="#64748b"),
+    font=dict(family="system-ui, -apple-system, sans-serif", size=12, color="#64748b"),
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
     margin=dict(l=0, r=0, t=10, b=0),
@@ -189,7 +184,7 @@ _PLOTLY_BASE = dict(
         bgcolor="rgba(20,23,34,0.97)",
         bordercolor="rgba(128,128,128,0.2)",
         font_size=12,
-        font_family="Inter, system-ui, sans-serif",
+        font_family="system-ui, -apple-system, sans-serif",
     ),
     modebar_remove=[
         "zoom", "pan", "select", "lasso2d", "zoomIn2d", "zoomOut2d",
