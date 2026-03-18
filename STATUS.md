@@ -1,5 +1,5 @@
 # MarketSignal — Project Status
-Last updated: 2026-03-15 (Stage 4 Phase 1 complete — Polymarket integration)
+Last updated: 2026-03-17 (Dashboard redesign + de-escalation sigmoid calibration)
 
 ---
 
@@ -12,8 +12,10 @@ Core thesis: convergence of independent signal layers (aviation + maritime + dip
 precedes the news cycle by hours to weeks. GDELT provides the historical ground truth
 for back-testing.
 
-**Live on:** DigitalOcean VPS — 1 vCPU / 1GB RAM, Ubuntu 24.04, IP: 146.190.142.71
-**Dashboard:** http://146.190.142.71:8501
+**Live on:** DigitalOcean VPS — 1 vCPU / 1GB RAM, Ubuntu 24.04, IP: 159.203.39.59
+**Dashboard:** http://159.203.39.59:8501
+**Note:** New droplet (2026-03-17) — previous droplet at 146.190.142.71 was shut down after DDoS.
+ADS-B and AIS baselines rebuilding; full anomaly detection resumes after ~7 days of new data.
 **Services:** managed by systemd (auto-restart on reboot)
 
 ---
@@ -125,12 +127,17 @@ de-escalation scores every 10 minutes.
   so historical chart comparisons stay valid. The `scores` table has new columns:
   `velocity_24h` (signed rate of change) and `velocity_bonus` (extra pts applied).
   DB migration handled automatically on startup (ALTER TABLE with try/except).
-- **Sigmoid normalisation** → 0–1 probability for Polymarket comparison; β=100
+- **Sigmoid normalisation** → 0–1 probability for Polymarket comparison
+  - Escalation β=100 (active war easily reaches 150-200 raw pts across 6 layers)
+  - De-escalation β=40 (structurally fewer signals; full ceasefire scenario peaks ~60-70 pts)
+  - Separate betas added 2026-03-17: previously both tracks used β=100, suppressing genuine
+    early de-escalation signals to <0.1%. Now 3 VIP diplomatic sightings (~14 pts) → ~11%
+    de-escalation probability. More useful for detecting early ceasefire signals.
 - **Divergence detection:** flags when GDELT and physical signals contradict each other
 - **NOTAM signal fix (2026-03-15):** ME FIR whitelist (19 FIRs). One signal per FIR,
   worst severity. Reduced notam_high 14→5, notam_medium 7→3. Raised SIGMOID_BETA 30→100.
 - **⚠ S_0 weights are placeholders** — must be calibrated via GDELT back-test
-- **⚠ Sigmoid β=100 is a rough calibration** — refine after 6+ months live data
+- **⚠ Sigmoid betas are rough calibrations** — refine after 6+ months live data
 - **⚠ VELOCITY_WEIGHT=0.30 and VELOCITY_MAX_BONUS=30 are initial estimates** — observe
   live behaviour before tuning; the key question is whether velocity bonus fires too
   eagerly on noise spikes vs. real acceleration
@@ -252,12 +259,21 @@ The same review also identified UI issues. Applied alongside Stage 4:
 9. **Progress bar overflow ✓** — replaced CSS progress bars with Plotly horizontal bar
    gauge (`chart_probability_gauge()`). No more overflow at low probabilities.
 
+### Dashboard redesign (2026-03-17) ✓
+Complete overhaul of `dashboard.py` main page:
+- **Top Polymarket Opportunities** — 3 clickable cards with Bet direction and color-coded
+  edge now appear first (was buried; most actionable info front and center)
+- **6-column metrics row** — Escalation P, Raw Score, ME Aircraft, Active NOTAMs,
+  GDELT Goldstein, VIP Sightings
+- Fixed GDELT SQLite column name bug (was using BigQuery names — GDELT section always showed offline)
+- Fixed ADS-B/Maritime/Convergence status strip showing "offline" due to naive datetime bug
+- Fixed `add_hline(secondary_y=True)` Plotly crash on GDELT Explorer page
+- Maritime Monitor: added shared styles + dark theme
+- Removed Inter font override (user preference)
+
 ### Pending UI improvements (not yet done)
-7. **Escalation % metric on main overview** — most actionable number still buried on page 5.
 8. **Stacked signal composition chart** — shows which signal types are driving the score
    over time. A spike that's all-NOTAM is less significant than a multi-layer convergence.
-10. **GDELT sparkline hline on wrong axis** — `add_hline(y=0)` targets primary y-axis
-    (event counts) instead of secondary y-axis (Goldstein scale). Visual cosmetic only.
 
 ---
 
