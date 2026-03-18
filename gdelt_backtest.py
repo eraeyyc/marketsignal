@@ -33,7 +33,8 @@ BASELINE_DAYS = 60     # days to use as baseline (days 31–90 before eval date)
 WINDOW_DAYS   = 30     # rolling signal window
 
 # Sigmoid params (convergence_engine.py values)
-SIGMOID_BETA  = 100.0
+SIGMOID_BETA       = 100.0  # escalation
+DEESC_SIGMOID_BETA =  40.0  # de-escalation (structurally lower ceiling)
 SIGMOID_ALPHA = 0.08
 
 # ── Known historical events ────────────────────────────────────────────────────
@@ -88,8 +89,9 @@ CHECKPOINTS = [30, 14, 7, 3, 1, 0]
 
 # ── Math ───────────────────────────────────────────────────────────────────────
 
-def to_probability(raw_score):
-    return 1.0 / (1.0 + math.exp(-SIGMOID_ALPHA * (raw_score - SIGMOID_BETA)))
+def to_probability(raw_score, beta=None):
+    b = beta if beta is not None else SIGMOID_BETA
+    return 1.0 / (1.0 + math.exp(-SIGMOID_ALPHA * (raw_score - b)))
 
 
 def gdelt_signal_at_date(conn, eval_date):
@@ -214,7 +216,8 @@ def print_event_result(result, verbose=False):
             print(f"  T-{cp:<5}   {'(no data)':>9}")
             continue
         score  = sig[score_key]
-        prob   = to_probability(score) * 100
+        beta   = DEESC_SIGMOID_BETA if track == "deescalation" else None
+        prob   = to_probability(score, beta=beta) * 100
         fired  = "YES" if sig["delta"] < -DELTA_FLOOR or sig["delta"] > DELTA_FLOOR else "no"
         marker = "  ← event" if cp == 0 else ""
         print(f"  T-{cp:<5}   {sig['avg_30d']:>9.3f}  {sig['avg_baseline']:>9.3f}  "
@@ -294,7 +297,8 @@ def print_calibration_summary(results):
         print(f"    avg delta at T-0: {avg_delta:+.3f}  "
               f"(negative = more hostile, positive = more cooperative)")
         print(f"    avg score at T-0: {avg_score:.2f}")
-        print(f"    P(T-0) with β={SIGMOID_BETA}: {to_probability(avg_score)*100:.1f}%")
+        beta_used = DEESC_SIGMOID_BETA if track == "deescalation" else SIGMOID_BETA
+        print(f"    P(T-0) with β={beta_used}: {to_probability(avg_score, beta=beta_used)*100:.1f}%")
         print()
 
     print("  ── Signal quality assessment ─────────────────────────────────────")

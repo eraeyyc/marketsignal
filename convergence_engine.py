@@ -103,12 +103,16 @@ S0 = {
 
 # Sigmoid normalisation parameters (β=midpoint, α=steepness)
 # ⚠ PLACEHOLDER — β should equal historical average convergence score from back-test
-SIGMOID_BETA  = 100.0  # midpoint: raw score at which probability = 0.50
-                       # ⚠ needs calibration against historical multi-level signal data.
-                       # With active war (US/Israel strikes on Iran, Mar 2026), raw score
-                       # ~200 → P≈100% which is correct. Revisit β once 3+ months of
-                       # signal history spans different conflict levels (background → crisis).
-SIGMOID_ALPHA = 0.08   # steepness
+SIGMOID_BETA  = 100.0  # escalation midpoint — raw score at P=50%. High because
+                       # active-war conditions stack 6 signal layers simultaneously,
+                       # easily reaching 150-200 pts. Correct at current conflict level.
+DEESC_SIGMOID_BETA = 40.0  # de-escalation midpoint — lower because de-escalation signals
+                            # are structurally fewer/gentler. Full ceasefire-negotiation
+                            # scenario realistically peaks at ~60-70 pts (bizjet clusters +
+                            # VIP shuttle + GDELT improvement). β=40 maps that to ~95%,
+                            # and early signals (~14 pts) to ~10-15% — visible but not
+                            # alarming. Calibrated Mar 2026.
+SIGMOID_ALPHA = 0.08   # steepness (shared)
 
 # Velocity (score acceleration) parameters
 # A rising score gets a bonus proportional to its 24h rate of change.
@@ -177,9 +181,10 @@ def state_score(s0, first_detected_at, signal_type, resolved_at=None):
         return s0 * STATE_L / (1 + math.exp(-STATE_K * (duration_h - STATE_X0)))
 
 
-def to_probability(raw_score):
+def to_probability(raw_score, beta=None):
     """Sigmoid normalisation: raw convergence score → 0–1 probability."""
-    return 1.0 / (1.0 + math.exp(-SIGMOID_ALPHA * (raw_score - SIGMOID_BETA)))
+    b = beta if beta is not None else SIGMOID_BETA
+    return 1.0 / (1.0 + math.exp(-SIGMOID_ALPHA * (raw_score - b)))
 
 
 # ── Signal readers ─────────────────────────────────────────────────────────────
@@ -1081,7 +1086,7 @@ def save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, diver
     # Probability uses the velocity-adjusted score; raw score stored separately
     # so historical trend charts remain comparable (no velocity inflation of raw)
     esc_prob   = to_probability(esc_raw + velocity_bonus)
-    deesc_prob = to_probability(deesc_raw)
+    deesc_prob = to_probability(deesc_raw, beta=DEESC_SIGMOID_BETA)
 
     top5 = sorted(signals, key=lambda s: s["score"], reverse=True)[:5]
     top5_json = json.dumps([{
@@ -1157,7 +1162,7 @@ def compute(verbose=True):
     # Velocity: compare to 24h ago, add bonus for rising scores before normalising
     velocity_24h, velocity_bonus = compute_velocity(engine_conn, esc_raw)
     esc_prob   = to_probability(esc_raw + velocity_bonus)
-    deesc_prob = to_probability(deesc_raw)
+    deesc_prob = to_probability(deesc_raw, beta=DEESC_SIGMOID_BETA)
 
     save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, divergence,
                velocity_24h, velocity_bonus)
