@@ -34,11 +34,13 @@ REQUEST_TIMEOUT = 10   # seconds
 # a geopolitical keyword. The geopolitical gate removes non-conflict markets
 # (sports, weather, economics) that happen to mention a ME city or country.
 
-# Geography keywords — at least one must match
+# Geography keywords — at least one must match (place names and factions ONLY).
+# Do NOT put geopolitical terms here (ceasefire, nuclear deal, idf) — they're not
+# geography and would cause non-ME markets (Russia/Ukraine ceasefire, etc.) to pass.
 ME_KEYWORDS_PHRASE = [
-    "israel", "gaza", "ceasefire", "lebanon", "syria",
+    "israel", "gaza", "lebanon", "syria",
     "houthi", "yemen", "red sea", "west bank", "hamas", "hezbollah",
-    "palestinian", "irgc", "rafah", "nuclear deal", "idf",
+    "palestinian", "irgc", "rafah",
     "middle east", "tel aviv", "beirut", "tehran",
 ]
 
@@ -58,7 +60,7 @@ _ME_WORD_RE = re.compile(
 # that happen to mention a ME geography word.
 GEOPOLITICAL_KEYWORDS = [
     "war", "attack", "strike", "bomb", "missile", "drone", "invasion",
-    "conflict", "crisis", "military", "troops", "soldier", "army",
+    "conflict", "crisis", "military", "troops", "soldier", "army", "forces",
     "airstrike", "ceasefire", "peace", "truce", "hostage", "prisoner",
     "nuclear", "sanctions", "embargo", "blockade", "occupation",
     "assassination", "killed", "casualties", "dead", "death toll",
@@ -69,9 +71,10 @@ GEOPOLITICAL_KEYWORDS = [
     "rocket", "explosion", "shelling", "artillery",
     "shoot down", "intercept", "retaliat",
     "jcpoa", "enrichment", "warhead", "ballistic",
-    "two-state", "annexat", "settlement",
+    "two-state", "annexat", "settlement", "normaliz", "normalise",
     "captured", "released", "freed", "exchange",
     "naval", "blockade", "strait", "hormuz",
+    "regime", "leadership change", "disarm", "ceasefire",
 ]
 
 # ── De-escalation track classification ────────────────────────────────────────
@@ -83,8 +86,13 @@ DEESC_KEYWORDS = [
     "hostage deal", "hostages released", "hostages freed",
     "prisoner exchange", "prisoner swap",
     "withdrawal", "withdraws", "pulls out",
-    "diplomatic", "normalization", "normalisation",
+    "diplomatic", "normalization", "normalisation", "normaliz", "normalise",
     "two-state", "de-escalat", "deescalat",
+    "nuclear deal",     # US-Iran nuclear deal = diplomatic agreement
+    "disarm",           # Hezbollah disarm, weapons handover
+    "end of military",  # end of military operations
+    "end hostilities",  # end hostilities
+    "halt operations",
 ]
 
 # Phrase patterns for de-escalation — catches "conflict ends", "war ends", etc.
@@ -94,14 +102,20 @@ _ENDING_VERBS   = r"(ends?|over|halt|cease|stop|resolv|settl)"
 _DEESC_PATTERNS = [
     re.compile(rf"{_CONFLICT_NOUNS}\s+{_ENDING_VERBS}", re.IGNORECASE),
     re.compile(rf"{_ENDING_VERBS}\s+.{{0,20}}{_CONFLICT_NOUNS}", re.IGNORECASE),
-    re.compile(r"\bend\s+by\b",       re.IGNORECASE),   # "end by [date]"
-    re.compile(r"\bends\s+by\b",      re.IGNORECASE),   # "ends by [date]"
-    re.compile(r"\bover\s+by\b",      re.IGNORECASE),   # "over by [date]"
-    re.compile(r"\bresolved?\s+by\b", re.IGNORECASE),   # "resolved by [date]"
-    re.compile(r"\bpeace\b",          re.IGNORECASE),   # standalone "peace"
-    re.compile(r"\bnegotiat",         re.IGNORECASE),   # negotiations, negotiated
-    re.compile(r"\breleas",           re.IGNORECASE),   # released, release of hostages
-    re.compile(r"\bfreed?\b",         re.IGNORECASE),   # freed, free
+    re.compile(r"\bend\s+by\b",             re.IGNORECASE),   # "end by [date]"
+    re.compile(r"\bends\s+by\b",            re.IGNORECASE),   # "ends by [date]"
+    re.compile(r"\bover\s+by\b",            re.IGNORECASE),   # "over by [date]"
+    re.compile(r"\bresolved?\s+by\b",       re.IGNORECASE),   # "resolved by [date]"
+    re.compile(r"\bpeace\b",                re.IGNORECASE),   # standalone "peace"
+    re.compile(r"\bnegotiat",               re.IGNORECASE),   # negotiations, negotiated
+    re.compile(r"\breleas",                 re.IGNORECASE),   # released, release of hostages
+    re.compile(r"\bfreed?\b",               re.IGNORECASE),   # freed, free
+    re.compile(r"\bend\s+of\s+(military|combat|offensive|air)", re.IGNORECASE),  # end of military/air operations
+    re.compile(r"announces?\s+end\s+of",    re.IGNORECASE),   # announces end of [ops]
+    re.compile(r"\bnuclear\s+(deal|agree)", re.IGNORECASE),   # nuclear deal / agreement
+    re.compile(r"\bdisarm",                 re.IGNORECASE),   # disarm, disarmament
+    re.compile(r"\bnormaliz",               re.IGNORECASE),   # normalize, normalization
+    re.compile(r"\bagrees?\s+to\s+(end|stop|halt|limit|cap)", re.IGNORECASE),  # agrees to end/stop/halt
 ]
 
 
@@ -409,16 +423,37 @@ def print_status(conn: sqlite3.Connection):
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+def reclassify(conn: sqlite3.Connection):
+    """Re-run classify_track on all markets in the DB and update signal_track."""
+    rows = conn.execute("SELECT condition_id, question FROM markets").fetchall()
+    updated = 0
+    for cid, question in rows:
+        track = classify_track(question)
+        conn.execute(
+            "UPDATE markets SET signal_track=? WHERE condition_id=?", (track, cid)
+        )
+        updated += 1
+    conn.commit()
+    print(f"Reclassified {updated} markets.")
+    print_status(conn)
+
+
 def main():
     parser = argparse.ArgumentParser(description="MarketSignal Polymarket collector")
-    parser.add_argument("--loop",   action="store_true", help="Poll continuously every 15 minutes")
-    parser.add_argument("--status", action="store_true", help="Print tracked markets and exit")
+    parser.add_argument("--loop",        action="store_true", help="Poll continuously every 15 minutes")
+    parser.add_argument("--status",      action="store_true", help="Print tracked markets and exit")
+    parser.add_argument("--reclassify",  action="store_true", help="Re-run track classification on all DB entries and exit")
     args = parser.parse_args()
 
     conn = init_db(DB_PATH)
 
     if args.status:
         print_status(conn)
+        conn.close()
+        return
+
+    if args.reclassify:
+        reclassify(conn)
         conn.close()
         return
 
