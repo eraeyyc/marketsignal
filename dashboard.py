@@ -21,11 +21,11 @@ st.set_page_config(
 )
 inject_css()
 
-ADSB_DB    = "adsb_events.db"
-NOTAM_DB   = "notam_events.db"
-GDELT_DB   = "gdelt_events.db"
-POLY_DB    = "polymarket_markets.db"
-ENGINE_DB  = "convergence_engine.db"
+ADSB_DB      = "adsb_events.db"
+NOTAM_DB     = "notam_events.db"
+GDELT_CACHE  = "gdelt_dashboard_cache.db"   # precomputed 30-day summary (tiny)
+POLY_DB      = "polymarket_markets.db"
+ENGINE_DB    = "convergence_engine.db"
 
 CONFLICT_CODES = ("15", "16", "17", "18", "19", "20")
 COOP_CODES     = ("03", "04", "05", "06", "08")
@@ -203,37 +203,27 @@ def notam_active_by_country():
         return pd.DataFrame()
 
 
-# ── GDELT local data ───────────────────────────────────────────────────────────
+# ── GDELT local data (reads from precomputed cache, not 768MB raw DB) ──────────
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def gdelt_goldstein_trend(days=30):
+def gdelt_goldstein_trend():
     try:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y%m%d")
-        with _db(GDELT_DB) as conn:
-            df = pd.read_sql_query("""
-                SELECT event_date,
-                       ROUND(AVG(goldstein_scale),2) AS goldstein,
-                       COUNT(*) AS total
-                FROM events
-                WHERE event_date >= ?
-                GROUP BY event_date
-                ORDER BY event_date
-            """, conn, params=(cutoff,))
+        with _db(GDELT_CACHE) as conn:
+            df = pd.read_sql_query(
+                "SELECT event_date, goldstein, total FROM trend_30d ORDER BY event_date",
+                conn,
+            )
         return df
     except Exception:
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def gdelt_summary_stats(days=30):
+def gdelt_summary_stats():
     try:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y%m%d")
-        with _db(GDELT_DB) as conn:
-            row = conn.execute("""
-                SELECT ROUND(AVG(goldstein_scale),2),
-                       SUM(CASE WHEN event_root_code IN ('15','16','17','18','19','20') THEN 1 ELSE 0 END),
-                       COUNT(*)
-                FROM events WHERE event_date >= ?
-            """, (cutoff,)).fetchone()
+        with _db(GDELT_CACHE) as conn:
+            row = conn.execute(
+                "SELECT goldstein, conflict_count, total FROM summary LIMIT 1"
+            ).fetchone()
         if row and row[2]:
             return {"goldstein": row[0], "conflict_pct": round(row[1]/row[2]*100,1), "total": row[2]}
         return None
@@ -449,7 +439,7 @@ st.divider()
 rows_adsb     = adsb_current_counts()
 total_me_ac   = sum(r[1] for r in rows_adsb) if rows_adsb else None
 active_notams = notam_active_count()
-gdelt_stats   = gdelt_summary_stats(30)
+gdelt_stats   = gdelt_summary_stats()
 ais_ts        = _db_latest_ts("ais_events.db",         "vessel_snapshots", "snapshot_time")
 engine_ts     = _db_latest_ts("convergence_engine.db", "scores",           "computed_at")
 
@@ -583,7 +573,7 @@ with left:
 with right:
     st.subheader("GDELT Goldstein Trend (30d)")
     st.caption("Event volume + Goldstein scale · red=conflict, green=coop")
-    gdelt_df = gdelt_goldstein_trend(30)
+    gdelt_df = gdelt_goldstein_trend()
     if gdelt_df.empty:
         st.info("GDELT data not available locally.")
     else:

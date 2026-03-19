@@ -285,5 +285,67 @@ def main():
     conn.close()
 
 
+def precompute_dashboard_cache(src_db=DB_PATH, cache_db="gdelt_dashboard_cache.db"):
+    """
+    Precompute the two queries the dashboard needs into a tiny SQLite file.
+    Run daily (or after each gdelt_collector.py pull) so the dashboard never
+    touches the 768MB gdelt_events.db directly.
+
+    Tables written:
+      trend_30d  — 30 rows: event_date, goldstein, total
+      summary    — 1 row: goldstein, conflict_pct, total, computed_at
+    """
+    from datetime import timezone, timedelta
+
+    src = sqlite3.connect(f"file:{src_db}?mode=ro", uri=True)
+    dst = sqlite3.connect(cache_db)
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y%m%d")
+
+    # 30-day trend
+    rows = src.execute("""
+        SELECT event_date,
+               ROUND(AVG(goldstein_scale), 2) AS goldstein,
+               COUNT(*) AS total
+        FROM events
+        WHERE event_date >= ?
+        GROUP BY event_date
+        ORDER BY event_date
+    """, (cutoff,)).fetchall()
+
+    dst.execute("DROP TABLE IF EXISTS trend_30d")
+    dst.execute("""
+        CREATE TABLE trend_30d (
+            event_date TEXT, goldstein REAL, total INTEGER
+        )
+    """)
+    dst.executemany("INSERT INTO trend_30d VALUES (?,?,?)", rows)
+
+    # Summary stats
+    row = src.execute("""
+        SELECT ROUND(AVG(goldstein_scale), 2),
+               SUM(CASE WHEN event_root_code IN ('15','16','17','18','19','20') THEN 1 ELSE 0 END),
+               COUNT(*)
+        FROM events WHERE event_date >= ?
+    """, (cutoff,)).fetchone()
+
+    dst.execute("DROP TABLE IF EXISTS summary")
+    dst.execute("""
+        CREATE TABLE summary (
+            goldstein REAL, conflict_count INTEGER, total INTEGER, computed_at TEXT
+        )
+    """)
+    if row and row[2]:
+        dst.execute("INSERT INTO summary VALUES (?,?,?,?)", (
+            row[0], row[1], row[2],
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        ))
+
+    dst.commit()
+    src.close()
+    dst.close()
+    print(f"gdelt_dashboard_cache.db written — {len(rows)} trend rows, summary computed.")
+
+
 if __name__ == "__main__":
     main()
