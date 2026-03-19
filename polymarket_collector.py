@@ -30,9 +30,11 @@ PAGE_SIZE     = 100    # markets per API page
 REQUEST_TIMEOUT = 10   # seconds
 
 # ── ME keyword filter ──────────────────────────────────────────────────────────
-# A market is tracked if its question contains ANY of these (case-insensitive).
+# A market passes the ME filter if it matches an ME geography keyword AND
+# a geopolitical keyword. The geopolitical gate removes non-conflict markets
+# (sports, weather, economics) that happen to mention a ME city or country.
 
-# Phrase keywords — simple substring match is fine (long enough to be unambiguous)
+# Geography keywords — at least one must match
 ME_KEYWORDS_PHRASE = [
     "israel", "gaza", "ceasefire", "lebanon", "syria",
     "houthi", "yemen", "red sea", "west bank", "hamas", "hezbollah",
@@ -46,34 +48,80 @@ ME_KEYWORDS_WORD = [
     "iran",
 ]
 
-# Match "iran" at word start — catches iran, iranian, iranic, etc.
-# but NOT miran, mirandés, arirang (where "iran" is mid-word)
 _ME_WORD_RE = re.compile(
     r"\b(" + "|".join(re.escape(kw) for kw in ME_KEYWORDS_WORD) + r")",
     re.IGNORECASE,
 )
 
+# Geopolitical gate — at least one must also match for the market to be tracked.
+# This filters out sports, weather, economics and other non-conflict markets
+# that happen to mention a ME geography word.
+GEOPOLITICAL_KEYWORDS = [
+    "war", "attack", "strike", "bomb", "missile", "drone", "invasion",
+    "conflict", "crisis", "military", "troops", "soldier", "army",
+    "airstrike", "ceasefire", "peace", "truce", "hostage", "prisoner",
+    "nuclear", "sanctions", "embargo", "blockade", "occupation",
+    "assassination", "killed", "casualties", "dead", "death toll",
+    "deal", "agreement", "negotiat", "diplomacy", "diplomatic",
+    "idf", "irgc", "hamas", "hezbollah", "houthi",
+    "escalat", "deescalat", "hostilities", "offensive", "withdraw",
+    "refugee", "siege", "ground operation", "ground invasion",
+    "rocket", "explosion", "shelling", "artillery",
+    "shoot down", "intercept", "retaliat",
+    "jcpoa", "enrichment", "warhead", "ballistic",
+    "two-state", "annexat", "settlement",
+    "captured", "released", "freed", "exchange",
+    "naval", "blockade", "strait", "hormuz",
+]
+
 # ── De-escalation track classification ────────────────────────────────────────
-# Markets whose question contains ANY of these are classified as de-escalation.
-# Everything else that passes the ME filter is classified as escalation.
+# A market is de-escalation if its question matches any keyword OR phrase pattern.
+# Everything else that passes the ME + geopolitical filter is escalation.
 
 DEESC_KEYWORDS = [
-    "ceasefire", "peace", "truce", "hostage deal", "agreement",
-    "withdrawal", "diplomatic", "normalization", "normalisation",
-    "hostages released", "prisoner", "two-state",
+    "ceasefire", "peace deal", "peace agreement", "truce",
+    "hostage deal", "hostages released", "hostages freed",
+    "prisoner exchange", "prisoner swap",
+    "withdrawal", "withdraws", "pulls out",
+    "diplomatic", "normalization", "normalisation",
+    "two-state", "de-escalat", "deescalat",
+]
+
+# Phrase patterns for de-escalation — catches "conflict ends", "war ends", etc.
+# These require two parts: a conflict noun + an ending verb
+_CONFLICT_NOUNS = r"(conflict|war|fighting|hostilities|crisis|violence|offensive)"
+_ENDING_VERBS   = r"(ends?|over|halt|cease|stop|resolv|settl)"
+_DEESC_PATTERNS = [
+    re.compile(rf"{_CONFLICT_NOUNS}\s+{_ENDING_VERBS}", re.IGNORECASE),
+    re.compile(rf"{_ENDING_VERBS}\s+.{{0,20}}{_CONFLICT_NOUNS}", re.IGNORECASE),
+    re.compile(r"\bend\s+by\b",       re.IGNORECASE),   # "end by [date]"
+    re.compile(r"\bends\s+by\b",      re.IGNORECASE),   # "ends by [date]"
+    re.compile(r"\bover\s+by\b",      re.IGNORECASE),   # "over by [date]"
+    re.compile(r"\bresolved?\s+by\b", re.IGNORECASE),   # "resolved by [date]"
+    re.compile(r"\bpeace\b",          re.IGNORECASE),   # standalone "peace"
+    re.compile(r"\bnegotiat",         re.IGNORECASE),   # negotiations, negotiated
+    re.compile(r"\breleas",           re.IGNORECASE),   # released, release of hostages
+    re.compile(r"\bfreed?\b",         re.IGNORECASE),   # freed, free
 ]
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def is_me_market(question: str) -> bool:
+    """Must match an ME geography keyword AND at least one geopolitical keyword."""
     q = question.lower()
-    return any(kw in q for kw in ME_KEYWORDS_PHRASE) or bool(_ME_WORD_RE.search(question))
+    geo_match = any(kw in q for kw in ME_KEYWORDS_PHRASE) or bool(_ME_WORD_RE.search(question))
+    if not geo_match:
+        return False
+    return any(kw in q for kw in GEOPOLITICAL_KEYWORDS)
 
 
 def classify_track(question: str) -> str:
+    """Return 'deescalation' or 'escalation' based on question content."""
     q = question.lower()
     if any(kw in q for kw in DEESC_KEYWORDS):
+        return "deescalation"
+    if any(p.search(question) for p in _DEESC_PATTERNS):
         return "deescalation"
     return "escalation"
 
