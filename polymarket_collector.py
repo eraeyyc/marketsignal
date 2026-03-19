@@ -344,13 +344,14 @@ def poll(conn: sqlite3.Connection):
             VALUES (?, ?, ?, ?, ?)
         """, (condition_id, now_str, yes_price, no_price, volume))
 
-    # Mark markets that were previously active but absent this poll as inactive
+    # Mark markets inactive if: absent this poll, OR end_date has passed
     previously_active = conn.execute(
-        "SELECT condition_id FROM markets WHERE active=1"
+        "SELECT condition_id, end_date FROM markets WHERE active=1"
     ).fetchall()
     deactivated = 0
-    for (cid,) in previously_active:
-        if cid not in seen_ids:
+    for (cid, end_date) in previously_active:
+        expired = end_date and end_date < now_str
+        if cid not in seen_ids or expired:
             conn.execute(
                 "UPDATE markets SET active=0, last_updated=? WHERE condition_id=?",
                 (now_str, cid)

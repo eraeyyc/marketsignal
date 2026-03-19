@@ -257,7 +257,9 @@ def load_polymarket_opportunities(top_n=3):
         with _db(POLY_DB) as conn:
             rows = conn.execute("""
                 SELECT question, slug, yes_price, volume, end_date, signal_track
-                FROM markets WHERE active=1 AND yes_price IS NOT NULL
+                FROM markets
+                WHERE active=1 AND yes_price IS NOT NULL
+                  AND (end_date IS NULL OR end_date > datetime('now'))
                 ORDER BY volume DESC
             """).fetchall()
 

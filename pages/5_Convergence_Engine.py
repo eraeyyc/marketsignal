@@ -98,6 +98,7 @@ def load_polymarket_markets():
                        volume, signal_track, end_date, last_updated
                 FROM markets
                 WHERE active = 1
+                  AND (end_date IS NULL OR end_date > datetime('now'))
                 ORDER BY volume DESC
             """, conn)
         return df
