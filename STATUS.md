@@ -1,5 +1,5 @@
 # MarketSignal — Project Status
-Last updated: 2026-03-17 (Dashboard redesign + de-escalation sigmoid calibration)
+Last updated: 2026-03-19 (Convergence engine v2 + Polymarket collector v2 + UX improvements)
 
 ---
 
@@ -120,27 +120,36 @@ de-escalation scores every 10 minutes.
   contaminated by recent escalation — a 60-day conflict would silently shrink the delta
   toward zero. New baseline: even a 3-month sustained escalation cannot contaminate it.
   Confirmed improvement: current delta -1.80 (was being partially masked by old baseline).
-- **Score velocity/acceleration** (added 2026-03-15): `compute_velocity()` compares
-  current raw score to score 24h ago (±2h window). Rising scores earn a velocity bonus
-  (= velocity_24h × 0.30, capped at 30pts). Probability is computed from the
-  velocity-adjusted score; `escalation_raw` stored in DB is always the unadjusted value
-  so historical chart comparisons stay valid. The `scores` table has new columns:
-  `velocity_24h` (signed rate of change) and `velocity_bonus` (extra pts applied).
-  DB migration handled automatically on startup (ALTER TABLE with try/except).
-- **Sigmoid normalisation** → 0–1 probability for Polymarket comparison
-  - Escalation β=100 (active war easily reaches 150-200 raw pts across 6 layers)
-  - De-escalation β=40 (structurally fewer signals; full ceasefire scenario peaks ~60-70 pts)
-  - Separate betas added 2026-03-17: previously both tracks used β=100, suppressing genuine
-    early de-escalation signals to <0.1%. Now 3 VIP diplomatic sightings (~14 pts) → ~11%
-    de-escalation probability. More useful for detecting early ceasefire signals.
+- **Bilateral velocity** (v2 2026-03-19): `compute_velocity()` now accepts a `track`
+  parameter — each track gets its own urgency bonus independently. De-escalation velocity
+  cap = 10.5 pts (15% of DEESC_MAX=70), escalation cap = 30 pts (15% of ESC_MAX=200),
+  so the bonus is proportional to each track's magnitude.
+- **Ceiling normalisation** (v2 2026-03-19, replaces split-beta approach):
+  Each track's raw score is divided by its theoretical maximum before a shared sigmoid.
+  - ESC_MAX_PTS = 200 (all 6 escalation layers firing simultaneously)
+  - DEESC_MAX_PTS = 70 (full ceasefire-negotiation scenario)
+  - SIGMOID_STEEPNESS = 10 (shared, in normalised [0,1] space)
+  - A 30% probability on either track now means the same thing: 30% of that track's
+    theoretical maximum signal strength. Previously, split betas (β=100 esc, β=40 deesc)
+    did the structural compensation *inside* the sigmoid — nonlinear, distorting at low
+    signal levels and saturating earlier at high ones. Tension and edge calculations
+    were unreliable because the same percentage represented different evidence levels.
+- **Tension metric** (v2 2026-03-19): `compute_tension()` = √(esc_prob × deesc_prob).
+  Only high when both tracks are simultaneously elevated. >15% flags that the model
+  is seeing signals in both directions — most useful indicator of Polymarket mispricing.
+  Stored as new `tension` column in `scores` table.
+- **Independent track probabilities** (v2 2026-03-19): tracks no longer sum to 1.
+  Old competing formula (esc + deesc = 100%) conflated "no signals" with "conflicting
+  signals" — both produced ~50%. Now: no signals → (esc≈1%, deesc≈1%), active war →
+  (esc≈90%, deesc≈2%), ceasefire-in-progress → (esc≈90%, deesc≈85%, tension≈87%).
+- **New DB columns** (auto-migrated): `tension`, `deesc_velocity_24h`, `deesc_velocity_bonus`
 - **Divergence detection:** flags when GDELT and physical signals contradict each other
 - **NOTAM signal fix (2026-03-15):** ME FIR whitelist (19 FIRs). One signal per FIR,
-  worst severity. Reduced notam_high 14→5, notam_medium 7→3. Raised SIGMOID_BETA 30→100.
+  worst severity. Reduced notam_high 14→5, notam_medium 7→3.
 - **⚠ S_0 weights are placeholders** — must be calibrated via GDELT back-test
-- **⚠ Sigmoid betas are rough calibrations** — refine after 6+ months live data
-- **⚠ VELOCITY_WEIGHT=0.30 and VELOCITY_MAX_BONUS=30 are initial estimates** — observe
-  live behaviour before tuning; the key question is whether velocity bonus fires too
-  eagerly on noise spikes vs. real acceleration
+- **⚠ Ceiling values (ESC_MAX=200, DEESC_MAX=70) are estimates** — refine after 6+ months
+  of live multi-layer data. Key question: does the max ever actually get approached, or
+  do we need to lower the ceilings to get meaningful probability spread in practice?
 - Run with: `python3 convergence_engine.py --loop`
 - Check signals: `python3 convergence_engine.py --signals`
 - Outputs to: `convergence_engine.db`
@@ -271,9 +280,27 @@ Complete overhaul of `dashboard.py` main page:
 - Maritime Monitor: added shared styles + dark theme
 - Removed Inter font override (user preference)
 
+### UX improvements (2026-03-19) ✓
+- **Overview:** added De-escalation metric card, renamed "Escalation P" → "Escalation",
+  "Active NOTAM Restrictions" → "Active NOTAMs"
+- **Convergence Engine:** probability gauge replaced with two independent horizontal bars
+  (tracks are no longer stacked / summing to 1); tension metric card added; bilateral
+  velocity display; Polymarket table sidebar filters (track, min |edge|%, max rows)
+- **ADS-B Monitor:** consistent sidebar state (collapsed); metrics row capped to top 5
+  regions with remaining regions behind an expander
+- **Formula explainer** on Convergence Engine page updated to reflect v2 math (ceiling
+  normalisation, tension, independent tracks, bilateral velocity)
+
+### Convergence engine v2 + Polymarket v2 (2026-03-19) ✓
+See Stage 3 and Stage 4 sections above for full detail. Key changes:
+- Independent track probabilities, ceiling normalisation, tension metric
+- Claude-based market classification with keyword fallback
+- `compute_edge()` function discounts edge under high tension
+- Auto-migrated DB schema (no manual migration needed)
+
 ### Pending UI improvements (not yet done)
-8. **Stacked signal composition chart** — shows which signal types are driving the score
-   over time. A spike that's all-NOTAM is less significant than a multi-layer convergence.
+- **Stacked signal composition chart** — shows which signal types are driving the score
+  over time. A spike that's all-NOTAM is less significant than a multi-layer convergence.
 
 ---
 
@@ -294,15 +321,22 @@ AIS vessel tracking via aisstream.io WebSocket stream.
 - **Baseline needs ~7 days** before anomaly detection activates
 - **Future:** add event volume weighting to GDELT signal; satellite AIS for Arabian Sea gaps
 
-### Stage 4: Polymarket Integration — DONE ✓ (Phase 1 — price visibility)
+### Stage 4: Polymarket Integration — DONE ✓ (v2 — Claude classification 2026-03-19)
 Live ME market prices surfaced alongside model probabilities so edge is visible in one view.
-- `polymarket_collector.py` — polls Gamma API (public, no auth), filters ME markets by 16 keywords,
-  classifies each as escalation or de-escalation track, stores to `polymarket_markets.db`
+- `polymarket_collector.py` (v2) — polls Gamma API, cheap geography pre-filter, then Claude
+  API classifies whether each market is predictable by the signal system and which track it
+  belongs to. Falls back to keyword classification when `ANTHROPIC_API_KEY` not set or API down.
+- Classification cached per-market (`classified_by` column) — subsequent polls only update prices
+  unless `--reclassify` is passed to force a full re-run
+- New DB columns: `classified_by` (claude/keyword), `classify_reason` (10-word summary)
+- Claude understands signal-system predictability: military strikes/airstrikes/ceasefire deals YES;
+  elections/UN votes/economic sanctions/casualty counts NO
 - `polymarket_markets.db` — markets + price_history tables (SQLite, local only)
-- Convergence Engine page: new "Polymarket: ME Markets" section with Edge column (+/− signed),
-  Bet column (Yes/No), color-coded by |edge| magnitude, links to Polymarket.com
-- Overview dashboard: "Top Poly Edge" metric tile showing largest |edge| opportunity
+- Convergence Engine page: sidebar filters (track, min |edge|%, max rows), clickable links
+- Overview dashboard: top 3 opportunity cards with edge color-coding
 - Run with: `python3 polymarket_collector.py --loop` (polls every 15 min)
+- Reclassify: `python3 polymarket_collector.py --reclassify`
+- Requires: `ANTHROPIC_API_KEY` in `.env` (keyword fallback if missing)
 - **Phase 2 (future):** Kelly criterion position sizing, edge threshold alerts, price history charts
 
 ### Stage 5: Planespotter Layer (manual for now)

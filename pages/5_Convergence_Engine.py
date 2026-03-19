@@ -647,12 +647,13 @@ Once the condition clears, it switches to exponential decay from the peak it rea
 using the signal's own λ — so a resolved ISR orbit (λ=0.06) stays relevant for weeks,
 while a lifted NOTAM (λ=0.35) fades in days.
 
-**Score velocity:** a rising score earns a bonus before the sigmoid step:
-> Velocity bonus = min(score_now − score_24h ago, 30) × 0.30
+**Score velocity:** each track independently earns a bonus when its score is rising:
+> Velocity bonus = min(velocity\_24h × 0.30, track\_cap)
 
-A score accelerating from 20 → 40 → 80 is treated more urgently than a static 80.
-The bonus is applied only to the probability calculation — the stored raw score is
-never inflated, so the history chart remains comparable across time.
+where track\_cap is 30 pts for escalation (15% of 200) and 10.5 pts for de-escalation
+(15% of 70). A score accelerating from 20 → 40 → 80 is treated more urgently than a
+static 80. The bonus is added before normalisation only — the stored raw score is never
+inflated, so the history chart stays comparable across time.
 
 **Coherence bonus (1.5×):** if 2+ signal categories both score >2.0 in the same macro-zone
 (GULF, LEVANT, IRAN, YEMEN\_RED\_SEA, etc.) simultaneously, that zone's subtotal gets a 50% bonus.
@@ -661,11 +662,33 @@ so a tanker surge in "persian\_gulf" and a traffic drop in "Persian Gulf / Qatar
 and can cohere. GDELT and going-dark signals act as wildcards: they can join any zone's coherence
 check, but cannot trigger the bonus on their own — physical corroboration is required.
 
-**Sigmoid normalisation:** the raw sum converts to 0–100% via:
-> P = 1 / (1 + e^(−0.08 × (score − 100)))
+**Ceiling normalisation → probability:** each track's raw score is divided by its theoretical
+maximum before a shared sigmoid converts it to 0–100%:
+> frac = raw\_score / ceiling
+> P = 1 / (1 + e^(−10 × (frac − 0.5)))
 
-⚠ The midpoint β=100 is a rough calibration based on expected live signal stack size.
-It will be refined once 6+ months of real multi-layer data can be compared against known
-historical events. The GDELT back-test validates signal direction (correct 6/7 events)
-but cannot set β because GDELT alone contributes only ~1–5 pts of the total score.
+Ceilings: **escalation = 200 pts** (all 6 layers firing: traffic drop + strategic lift + ISR +
+NOTAMs + maritime + GDELT + coherence bonuses), **de-escalation = 70 pts** (ceasefire scenario:
+bizjet clusters + VIP diplomatic flights + route reopening + NOTAM lifts + GDELT improvement).
+
+This means **a 30% probability on either track means the same thing:** the system is seeing 30%
+of the maximum signal strength it could theoretically see for that track.
+
+The alternative — a lower sigmoid midpoint (β) for de-escalation — compensates for the structural
+imbalance (escalation has ~6 signal layers, de-escalation ~2–3) inside the sigmoid. That creates
+a nonlinear distortion that changes shape across the curve, making the numbers on both tracks
+incomparable and tension / edge calculations unreliable.
+
+**Tension:** √(esc\_prob × deesc\_prob) — the geometric mean of both probabilities.
+Only high when *both* tracks are simultaneously elevated. Values above ~15% flag a "fork in the
+road" situation where the model is seeing real signals in both directions. That's where Polymarket
+markets are most likely to be mispriced, because crowds default to ~50/50 when signals conflict,
+while the system can identify which track has stronger physical corroboration (coherence multiplier,
+signal diversity, number of independent layers).
+
+**The two tracks are independent — they do not sum to 100%.** A world with no signals gives
+(esc ≈ 1%, deesc ≈ 1%). A world in active war gives (esc ≈ 90%, deesc ≈ 2%). A world
+mid-ceasefire-negotiation with fighting still ongoing could give (esc ≈ 90%, deesc ≈ 85%,
+tension ≈ 87%) — the system correctly flags maximum uncertainty rather than collapsing to a
+single number.
 """)
