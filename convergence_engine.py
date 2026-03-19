@@ -187,6 +187,35 @@ def to_probability(raw_score, beta=None):
     return 1.0 / (1.0 + math.exp(-SIGMOID_ALPHA * (raw_score - b)))
 
 
+def competing_probabilities(esc_raw, deesc_raw, velocity_bonus=0.0):
+    """
+    Convert raw scores to coherent, competing probabilities that always sum to 1.
+
+    Each track is normalised to its own beta (esc=100, deesc=40), reflecting
+    that de-escalation signals are structurally fewer and gentler than escalation
+    signals during active conflict.  The normalised values then compete:
+
+        net = esc_norm - deesc_norm    (range -1 to +1)
+        esc_prob  = (net + 1) / 2
+        deesc_prob = 1 - esc_prob
+
+    This means:
+      - Rising de-escalation signals pull escalation probability DOWN, even while
+        escalation signals are still dominant.
+      - The result is always a coherent probability pair summing to 100%.
+      - A world with no signals at all → ~50/50 (maximum uncertainty), which is
+        the correct prior when there is no information.
+
+    Velocity bonus is applied to the escalation track only (same as before).
+    """
+    esc_norm   = to_probability(esc_raw + velocity_bonus, beta=SIGMOID_BETA)
+    deesc_norm = to_probability(deesc_raw, beta=DEESC_SIGMOID_BETA)
+    net        = esc_norm - deesc_norm        # -1 → +1
+    esc_prob   = (net + 1.0) / 2.0           # map to 0–1
+    deesc_prob = 1.0 - esc_prob
+    return round(esc_prob, 4), round(deesc_prob, 4)
+
+
 # ── Signal readers ─────────────────────────────────────────────────────────────
 
 def _cutoff():
@@ -1083,10 +1112,9 @@ def compute_velocity(engine_conn, current_raw):
 def save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, divergence,
                velocity_24h=0.0, velocity_bonus=0.0):
     now        = datetime.now(timezone.utc).isoformat()
-    # Probability uses the velocity-adjusted score; raw score stored separately
-    # so historical trend charts remain comparable (no velocity inflation of raw)
-    esc_prob   = to_probability(esc_raw + velocity_bonus)
-    deesc_prob = to_probability(deesc_raw, beta=DEESC_SIGMOID_BETA)
+    # Competing probability formula: tracks normalised then compete so they sum to 1.
+    # Raw scores stored separately so historical trend charts stay comparable.
+    esc_prob, deesc_prob = competing_probabilities(esc_raw, deesc_raw, velocity_bonus)
 
     top5 = sorted(signals, key=lambda s: s["score"], reverse=True)[:5]
     top5_json = json.dumps([{
@@ -1161,8 +1189,7 @@ def compute(verbose=True):
 
     # Velocity: compare to 24h ago, add bonus for rising scores before normalising
     velocity_24h, velocity_bonus = compute_velocity(engine_conn, esc_raw)
-    esc_prob   = to_probability(esc_raw + velocity_bonus)
-    deesc_prob = to_probability(deesc_raw, beta=DEESC_SIGMOID_BETA)
+    esc_prob, deesc_prob = competing_probabilities(esc_raw, deesc_raw, velocity_bonus)
 
     save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, divergence,
                velocity_24h, velocity_bonus)
