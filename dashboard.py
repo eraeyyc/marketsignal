@@ -238,12 +238,13 @@ def load_model_probs():
     try:
         with _db(ENGINE_DB) as conn:
             row = conn.execute("""
-                SELECT escalation_prob, deescalation_prob, escalation_raw, velocity_24h
+                SELECT escalation_prob, deescalation_prob, escalation_raw,
+                       velocity_24h, COALESCE(tension, 0.0)
                 FROM scores ORDER BY computed_at DESC LIMIT 1
             """).fetchone()
-        return row if row else (0.5, 0.5, 0.0, 0.0)
+        return row if row else (0.5, 0.5, 0.0, 0.0, 0.0)
     except Exception:
-        return (0.5, 0.5, 0.0, 0.0)
+        return (0.5, 0.5, 0.0, 0.0, 0.0)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_polymarket_opportunities(top_n=3):
@@ -460,7 +461,7 @@ st.subheader("Top Polymarket Opportunities")
 
 opps = load_polymarket_opportunities(3)
 model_row = load_model_probs()
-esc_prob, deesc_prob, esc_raw = model_row[0], model_row[1], model_row[2]
+esc_prob, deesc_prob, esc_raw, _, tension = model_row[0], model_row[1], model_row[2], model_row[3], model_row[4]
 
 if not os.path.exists(POLY_DB) or not opps:
     st.info("No Polymarket data yet. Run `python3 polymarket_collector.py --loop`")

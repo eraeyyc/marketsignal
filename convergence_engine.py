@@ -181,39 +181,37 @@ def state_score(s0, first_detected_at, signal_type, resolved_at=None):
         return s0 * STATE_L / (1 + math.exp(-STATE_K * (duration_h - STATE_X0)))
 
 
-def to_probability(raw_score, beta=None):
-    """Sigmoid normalisation: raw convergence score → 0–1 probability."""
-    b = beta if beta is not None else SIGMOID_BETA
-    return 1.0 / (1.0 + math.exp(-SIGMOID_ALPHA * (raw_score - b)))
-
-
-def competing_probabilities(esc_raw, deesc_raw, velocity_bonus=0.0):
+def track_probability(raw_score, track="escalation", velocity_bonus=0.0):
     """
-    Convert raw scores to coherent, competing probabilities that always sum to 1.
+    Independent sigmoid normalisation for a single track.
 
-    Each track is normalised to its own beta (esc=100, deesc=40), reflecting
-    that de-escalation signals are structurally fewer and gentler than escalation
-    signals during active conflict.  The normalised values then compete:
+    Each track uses its own beta reflecting structural differences in signal volume:
+      - Escalation  β=100: active war stacks 6 layers → 150-200 pts
+      - De-escalation β=40: ceasefire scenario peaks ~60-70 pts
 
-        net = esc_norm - deesc_norm    (range -1 to +1)
-        esc_prob  = (net + 1) / 2
-        deesc_prob = 1 - esc_prob
-
-    This means:
-      - Rising de-escalation signals pull escalation probability DOWN, even while
-        escalation signals are still dominant.
-      - The result is always a coherent probability pair summing to 100%.
-      - A world with no signals at all → ~50/50 (maximum uncertainty), which is
-        the correct prior when there is no information.
-
-    Velocity bonus is applied to the escalation track only (same as before).
+    Returns a 0–1 probability for this track alone. No coupling to the other track.
+    "No signals" → (esc≈0%, deesc≈4%) which is clearly distinguishable from
+    "conflicting signals" → (esc≈50%, deesc≈50%).
     """
-    esc_norm   = to_probability(esc_raw + velocity_bonus, beta=SIGMOID_BETA)
-    deesc_norm = to_probability(deesc_raw, beta=DEESC_SIGMOID_BETA)
-    net        = esc_norm - deesc_norm        # -1 → +1
-    esc_prob   = (net + 1.0) / 2.0           # map to 0–1
-    deesc_prob = 1.0 - esc_prob
-    return round(esc_prob, 4), round(deesc_prob, 4)
+    beta     = DEESC_SIGMOID_BETA if track == "deescalation" else SIGMOID_BETA
+    adjusted = raw_score + velocity_bonus
+    prob     = 1.0 / (1.0 + math.exp(-SIGMOID_ALPHA * (adjusted - beta)))
+    return round(prob, 4)
+
+
+def compute_tension(esc_prob, deesc_prob):
+    """
+    Tension metric: geometric mean of both probabilities.
+
+    Returns 0–1:
+      ~0.0 = at least one track is quiet (one-sided or no signals)
+      ~1.0 = both tracks near 100% (maximum contradictory signals)
+
+    High tension (>0.15) is the best indicator of mispriced Polymarket markets —
+    when signals point both directions, crowds default to ~50/50 but the system
+    can see which track has stronger physical corroboration.
+    """
+    return round(math.sqrt(max(0.0, esc_prob) * max(0.0, deesc_prob)), 4)
 
 
 # ── Signal readers ─────────────────────────────────────────────────────────────
@@ -1055,47 +1053,50 @@ def init_engine_db():
     conn = sqlite3.connect(ENGINE_DB)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS scores (
-            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-            computed_at         TEXT NOT NULL,
-            escalation_raw      REAL,
-            deescalation_raw    REAL,
-            escalation_prob     REAL,
-            deescalation_prob   REAL,
-            active_signal_count INTEGER,
-            coherence_events    TEXT,   -- JSON
-            divergence_flag     TEXT,
-            dominant_signals    TEXT,   -- JSON: top 5 signals by score
-            velocity_24h        REAL,   -- raw score change vs 24h ago
-            velocity_bonus      REAL    -- extra points added to prob calculation
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            computed_at          TEXT NOT NULL,
+            escalation_raw       REAL,
+            deescalation_raw     REAL,
+            escalation_prob      REAL,
+            deescalation_prob    REAL,
+            tension              REAL,
+            active_signal_count  INTEGER,
+            coherence_events     TEXT,
+            divergence_flag      TEXT,
+            dominant_signals     TEXT,
+            velocity_24h         REAL,
+            velocity_bonus       REAL,
+            deesc_velocity_24h   REAL,
+            deesc_velocity_bonus REAL
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_scores_time ON scores(computed_at)")
-    # Migrate existing DBs that predate the velocity columns
-    for col_def in ["velocity_24h REAL", "velocity_bonus REAL"]:
+    # Additive migrations — safe to retry
+    for col_def in [
+        "velocity_24h REAL", "velocity_bonus REAL",
+        "tension REAL", "deesc_velocity_24h REAL", "deesc_velocity_bonus REAL",
+    ]:
         try:
             conn.execute(f"ALTER TABLE scores ADD COLUMN {col_def}")
         except sqlite3.OperationalError:
-            pass  # column already exists
+            pass
     conn.commit()
     return conn
 
 
-def compute_velocity(engine_conn, current_raw):
+def compute_velocity(engine_conn, current_raw, track="escalation"):
     """
-    Compare the current escalation raw score against the score from ~24h ago.
+    Compare current raw score against ~24h ago for the given track.
 
-    Returns (velocity_24h, velocity_bonus):
-      velocity_24h  — signed rate of change (positive = rising, negative = falling)
-      velocity_bonus — extra score added before sigmoid normalisation (only for rising scores)
-
-    A ±2h search window around the 24h lookback handles gaps in polling (e.g. restarts).
-    Returns (0.0, 0.0) when insufficient history exists.
+    Returns (velocity_24h, velocity_bonus).
+    A ±2h window handles polling gaps. Returns (0.0, 0.0) if insufficient history.
     """
-    lo = (datetime.now(timezone.utc) - timedelta(hours=VELOCITY_LOOKBACK_H + 2)).isoformat()
-    hi = (datetime.now(timezone.utc) - timedelta(hours=VELOCITY_LOOKBACK_H - 2)).isoformat()
+    col = "escalation_raw" if track == "escalation" else "deescalation_raw"
+    lo  = (datetime.now(timezone.utc) - timedelta(hours=VELOCITY_LOOKBACK_H + 2)).isoformat()
+    hi  = (datetime.now(timezone.utc) - timedelta(hours=VELOCITY_LOOKBACK_H - 2)).isoformat()
 
-    row = engine_conn.execute("""
-        SELECT escalation_raw FROM scores
+    row = engine_conn.execute(f"""
+        SELECT {col} FROM scores
         WHERE computed_at BETWEEN ? AND ?
         ORDER BY computed_at DESC
         LIMIT 1
@@ -1104,45 +1105,40 @@ def compute_velocity(engine_conn, current_raw):
     if row is None:
         return 0.0, 0.0
 
-    velocity_24h  = current_raw - row[0]
+    velocity_24h   = current_raw - row[0]
     velocity_bonus = min(max(0.0, velocity_24h) * VELOCITY_WEIGHT, VELOCITY_MAX_BONUS)
     return round(velocity_24h, 3), round(velocity_bonus, 3)
 
 
 def save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, divergence,
-               velocity_24h=0.0, velocity_bonus=0.0):
+               esc_velocity_24h=0.0, esc_velocity_bonus=0.0,
+               deesc_velocity_24h=0.0, deesc_velocity_bonus=0.0):
     now        = datetime.now(timezone.utc).isoformat()
-    # Competing probability formula: tracks normalised then compete so they sum to 1.
-    # Raw scores stored separately so historical trend charts stay comparable.
-    esc_prob, deesc_prob = competing_probabilities(esc_raw, deesc_raw, velocity_bonus)
+    esc_prob   = track_probability(esc_raw,   "escalation",   esc_velocity_bonus)
+    deesc_prob = track_probability(deesc_raw, "deescalation", deesc_velocity_bonus)
+    tension    = compute_tension(esc_prob, deesc_prob)
 
     top5 = sorted(signals, key=lambda s: s["score"], reverse=True)[:5]
     top5_json = json.dumps([{
-        "type": s["type"],
-        "region": s["region"],
-        "score": round(s["score"], 2),
-        "track": s["track"],
+        "type": s["type"], "region": s["region"],
+        "score": round(s["score"], 2), "track": s["track"],
     } for s in top5])
 
     engine_conn.execute("""
         INSERT INTO scores
             (computed_at, escalation_raw, deescalation_raw,
-             escalation_prob, deescalation_prob, active_signal_count,
-             coherence_events, divergence_flag, dominant_signals,
-             velocity_24h, velocity_bonus)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             escalation_prob, deescalation_prob, tension,
+             active_signal_count, coherence_events, divergence_flag, dominant_signals,
+             velocity_24h, velocity_bonus, deesc_velocity_24h, deesc_velocity_bonus)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         now,
-        round(esc_raw, 3),
-        round(deesc_raw, 3),
-        round(esc_prob, 4),
-        round(deesc_prob, 4),
+        round(esc_raw, 3), round(deesc_raw, 3),
+        esc_prob, deesc_prob, tension,
         len(signals),
-        json.dumps(coherence_events),
-        divergence,
-        top5_json,
-        velocity_24h,
-        velocity_bonus,
+        json.dumps(coherence_events), divergence, top5_json,
+        esc_velocity_24h, esc_velocity_bonus,
+        deesc_velocity_24h, deesc_velocity_bonus,
     ))
     engine_conn.commit()
 
@@ -1187,12 +1183,17 @@ def compute(verbose=True):
 
     esc_raw, deesc_raw, coherence_events, divergence = calculate_scores(signals)
 
-    # Velocity: compare to 24h ago, add bonus for rising scores before normalising
-    velocity_24h, velocity_bonus = compute_velocity(engine_conn, esc_raw)
-    esc_prob, deesc_prob = competing_probabilities(esc_raw, deesc_raw, velocity_bonus)
+    # Bilateral velocity — each track gets its own urgency bonus
+    esc_vel_24h,   esc_vel_bonus   = compute_velocity(engine_conn, esc_raw,   "escalation")
+    deesc_vel_24h, deesc_vel_bonus = compute_velocity(engine_conn, deesc_raw, "deescalation")
+
+    # Independent track probabilities (no longer sum to 1)
+    esc_prob   = track_probability(esc_raw,   "escalation",   esc_vel_bonus)
+    deesc_prob = track_probability(deesc_raw, "deescalation", deesc_vel_bonus)
+    tension    = compute_tension(esc_prob, deesc_prob)
 
     save_score(engine_conn, esc_raw, deesc_raw, signals, coherence_events, divergence,
-               velocity_24h, velocity_bonus)
+               esc_vel_24h, esc_vel_bonus, deesc_vel_24h, deesc_vel_bonus)
     engine_conn.close()
 
     if verbose:
@@ -1202,11 +1203,19 @@ def compute(verbose=True):
         print(f"  Active signals:      {len(signals)}")
         print(f"  Escalation raw:      {esc_raw:.2f}")
         print(f"  De-escalation raw:   {deesc_raw:.2f}")
-        if velocity_24h != 0.0:
-            direction = "↑" if velocity_24h > 0 else "↓"
-            print(f"  Velocity (24h):      {velocity_24h:+.2f}  {direction}  bonus={velocity_bonus:.2f}")
-        print(f"  Escalation prob:     {esc_prob*100:.1f}%  ⚠ UNCALIBRATED")
-        print(f"  De-escalation prob:  {deesc_prob*100:.1f}%  ⚠ UNCALIBRATED")
+        if esc_vel_24h != 0.0:
+            d = "↑" if esc_vel_24h > 0 else "↓"
+            print(f"  Esc velocity (24h):  {esc_vel_24h:+.2f}  {d}  bonus={esc_vel_bonus:.2f}")
+        if deesc_vel_24h != 0.0:
+            d = "↑" if deesc_vel_24h > 0 else "↓"
+            print(f"  Deesc velocity (24h):{deesc_vel_24h:+.2f}  {d}  bonus={deesc_vel_bonus:.2f}")
+        print(f"  Escalation prob:     {esc_prob*100:.1f}%")
+        print(f"  De-escalation prob:  {deesc_prob*100:.1f}%")
+        print(f"  Tension:             {tension:.3f}", end="")
+        if tension > 0.15:
+            print("  ⚠ HIGH TENSION — conflicting signals, check divergence")
+        else:
+            print()
         if coherence_events:
             print(f"\n  Coherence multiplier active in {len(coherence_events)} region(s):")
             for ce in coherence_events:
@@ -1220,7 +1229,8 @@ def compute(verbose=True):
             for s in top5:
                 print(f"    [{s['track'][:3].upper()}] {s['type']:<22} {s['region']:<12} score={s['score']:.2f}")
 
-    return esc_raw, deesc_raw, esc_prob, deesc_prob, signals, velocity_24h, velocity_bonus
+    return esc_raw, deesc_raw, esc_prob, deesc_prob, tension, signals, \
+           esc_vel_24h, esc_vel_bonus, deesc_vel_24h, deesc_vel_bonus
 
 
 def print_status():
@@ -1231,23 +1241,26 @@ def print_status():
     rows = conn.execute("""
         SELECT computed_at, escalation_raw, deescalation_raw,
                escalation_prob, deescalation_prob,
-               active_signal_count, divergence_flag
+               tension, active_signal_count, divergence_flag
         FROM scores
         ORDER BY computed_at DESC
         LIMIT 20
     """).fetchall()
     print(f"\nLast {len(rows)} convergence scores:")
-    print(f"  {'Time':<20} {'Esc Raw':>8} {'Deesc Raw':>10} {'Esc%':>7} {'Deesc%':>8}  Sigs  Flag")
-    print("  " + "-" * 70)
-    for computed_at, er, dr, ep, dp, sigs, flag in rows:
+    print(f"  {'Time':<20} {'Esc Raw':>8} {'Deesc':>6} {'Esc%':>6} {'Deesc%':>7} {'Tension':>8}  Sigs  Flag")
+    print("  " + "-" * 78)
+    for computed_at, er, dr, ep, dp, tension, sigs, flag in rows:
         flag_str = " DIVERGE" if flag else ""
-        print(f"  {computed_at[:16]:<20} {er:>8.2f} {dr:>10.2f} {ep*100:>6.1f}% {dp*100:>7.1f}%  {sigs:>4}{flag_str}")
+        t = tension or 0.0
+        t_marker = " ⚠" if t > 0.15 else ""
+        print(f"  {computed_at[:16]:<20} {er:>8.2f} {dr:>6.2f} {ep*100:>5.1f}% {dp*100:>6.1f}% {t:>7.3f}{t_marker}  {sigs:>4}{flag_str}")
     conn.close()
 
 
 def print_signals():
     """Print all active signals and their current decayed scores."""
-    _, _, _, _, signals = compute(verbose=False)
+    result  = compute(verbose=False)
+    signals = result[5]  # index 5 in new 10-value return signature
     if not signals:
         print("No active signals in the last 30 days.")
         return

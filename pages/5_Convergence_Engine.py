@@ -43,10 +43,13 @@ def load_latest_score():
             row = conn.execute("""
                 SELECT computed_at, escalation_raw, deescalation_raw,
                        escalation_prob, deescalation_prob,
+                       COALESCE(tension, 0.0),
                        active_signal_count, coherence_events,
                        divergence_flag, dominant_signals,
                        COALESCE(velocity_24h, 0.0),
-                       COALESCE(velocity_bonus, 0.0)
+                       COALESCE(velocity_bonus, 0.0),
+                       COALESCE(deesc_velocity_24h, 0.0),
+                       COALESCE(deesc_velocity_bonus, 0.0)
                 FROM scores
                 ORDER BY computed_at DESC
                 LIMIT 1
@@ -63,7 +66,9 @@ def load_score_history(hours=72):
         with _conn() as conn:
             df = pd.read_sql_query("""
                 SELECT computed_at, escalation_raw, deescalation_raw,
-                       escalation_prob, deescalation_prob, active_signal_count,
+                       escalation_prob, deescalation_prob,
+                       COALESCE(tension, 0.0) AS tension,
+                       active_signal_count,
                        COALESCE(velocity_24h, 0.0) AS velocity_24h,
                        COALESCE(velocity_bonus, 0.0) AS velocity_bonus
                 FROM scores
@@ -82,7 +87,8 @@ def load_live_signals():
     """Run compute() to get full active signal list. Cached 10 min."""
     try:
         import convergence_engine as ce
-        _, _, _, _, signals, _, _ = ce.compute(verbose=False)
+        result  = ce.compute(verbose=False)
+        signals = result[5]  # index 5 in 10-value return signature
         return signals
     except Exception as e:
         return None
@@ -194,44 +200,50 @@ def chart_raw_scores(df):
     return fig
 
 
-def chart_probability_gauge(esc_pct, deesc_pct):
-    """Single stacked bar showing escalation vs de-escalation competing for 100%."""
-    esc_color = "#ef4444" if esc_pct > 60 else "#f97316" if esc_pct > 40 else "#94a3b8"
+def chart_probability_gauges(esc_pct, deesc_pct):
+    """Two independent horizontal bars — each track is its own 0-100% assessment."""
+    esc_color   = "#ef4444" if esc_pct > 60 else "#f97316" if esc_pct > 40 else "#94a3b8"
+    deesc_color = "#22c55e" if deesc_pct > 20 else "#86efac" if deesc_pct > 10 else "#94a3b8"
     fig = go.Figure()
-    # De-escalation segment (left)
     fig.add_trace(go.Bar(
-        name="De-escalation",
-        x=[deesc_pct], y=[""],
-        orientation="h",
-        marker=dict(color="#22c55e", opacity=0.85),
-        width=0.55,
-        hovertemplate=f"De-escalation: {deesc_pct:.1f}%<extra></extra>",
-        text=f"<b>{deesc_pct:.1f}%</b>" if deesc_pct >= 8 else "",
-        textposition="inside",
-        textfont=dict(color="white", size=13, family="system-ui"),
-    ))
-    # Escalation segment (right)
-    fig.add_trace(go.Bar(
-        name="Escalation",
-        x=[esc_pct], y=[""],
+        name="Escalation", x=[esc_pct], y=["Escalation"],
         orientation="h",
         marker=dict(color=esc_color, opacity=0.85),
-        width=0.55,
-        hovertemplate=f"Escalation: {esc_pct:.1f}%<extra></extra>",
-        text=f"<b>{esc_pct:.1f}%</b>" if esc_pct >= 8 else "",
+        width=0.45,
+        text=f"<b>{esc_pct:.1f}%</b>" if esc_pct >= 5 else "",
         textposition="inside",
         textfont=dict(color="white", size=13, family="system-ui"),
+        hovertemplate=f"Escalation: {esc_pct:.1f}%<extra></extra>",
     ))
-    fig.add_vline(x=50, line_dash="dot", line_color="rgba(255,255,255,0.25)", line_width=1)
+    fig.add_trace(go.Bar(
+        name="De-escalation", x=[deesc_pct], y=["De-escalation"],
+        orientation="h",
+        marker=dict(color=deesc_color, opacity=0.85),
+        width=0.45,
+        text=f"<b>{deesc_pct:.1f}%</b>" if deesc_pct >= 5 else "",
+        textposition="inside",
+        textfont=dict(color="white", size=13, family="system-ui"),
+        hovertemplate=f"De-escalation: {deesc_pct:.1f}%<extra></extra>",
+    ))
+    # Background tracks to show the full 0-100 scale
+    fig.add_trace(go.Bar(
+        x=[100 - esc_pct], y=["Escalation"], orientation="h",
+        marker=dict(color="rgba(148,163,184,0.08)"), width=0.45,
+        showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Bar(
+        x=[100 - deesc_pct], y=["De-escalation"], orientation="h",
+        marker=dict(color="rgba(148,163,184,0.08)"), width=0.45,
+        showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_vline(x=50, line_dash="dot", line_color="rgba(255,255,255,0.2)", line_width=1)
     fig.update_layout(**plotly_layout(
-        height=80,
+        height=110,
         xaxis=dict(range=[0, 100], ticksuffix="%", **axis_style()),
-        yaxis=dict(showticklabels=False, **axis_style()),
+        yaxis=axis_style(),
         barmode="stack",
-        showlegend=True,
-        legend=dict(orientation="h", y=2.0, x=0,
-                    font=dict(size=11, color="#94a3b8"), bgcolor="rgba(0,0,0,0)"),
-        margin=dict(l=0, r=0, t=30, b=0),
+        showlegend=False,
+        margin=dict(l=0, r=0, t=10, b=0),
     ))
     return fig
 
@@ -298,8 +310,9 @@ if not latest:
     st.info("Engine is running but no scores yet. Check back in a moment.")
     st.stop()
 
-computed_at, esc_raw, deesc_raw, esc_prob, deesc_prob, sig_count, \
-    coherence_json, divergence_flag, dominant_json, velocity_24h, velocity_bonus = latest
+computed_at, esc_raw, deesc_raw, esc_prob, deesc_prob, tension, sig_count, \
+    coherence_json, divergence_flag, dominant_json, \
+    velocity_24h, velocity_bonus, deesc_vel_24h, deesc_vel_bonus = latest
 
 computed_str = computed_at[:16] if computed_at else "—"
 now_str      = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -319,28 +332,31 @@ st.divider()
 # ── Big probability display ────────────────────────────────────────────────────
 st.subheader("Current Score")
 
-p1, p2, p3, p4, p5 = st.columns(5)
+p1, p2, p3, p4, p5, p6 = st.columns(6)
 
 esc_pct   = round(esc_prob * 100, 1)
 deesc_pct = round(deesc_prob * 100, 1)
+tension_pct = round(tension * 100, 1)
 
-velocity_arrow = "↑" if velocity_24h > 0 else ("↓" if velocity_24h < 0 else "→")
-velocity_delta = f"{velocity_24h:+.1f} pts" if velocity_24h != 0 else "no history"
+esc_vel_arrow   = "↑" if velocity_24h > 0 else ("↓" if velocity_24h < 0 else "→")
+deesc_vel_arrow = "↑" if deesc_vel_24h > 0 else ("↓" if deesc_vel_24h < 0 else "→")
 
-p1.metric("Escalation probability",    f"{esc_pct}%",
-          help="Sigmoid-normalised using velocity-adjusted score. Meaningless until β is calibrated via back-test.")
-p2.metric("De-escalation probability", f"{deesc_pct}%",
-          help="Sigmoid-normalised. Meaningless until β is calibrated via back-test.")
-p3.metric("Escalation raw score",      f"{esc_raw:.2f}",
+p1.metric("Escalation",        f"{esc_pct}%",
+          help="Independent sigmoid probability for escalation track (β=100). Not coupled to de-escalation.")
+p2.metric("De-escalation",     f"{deesc_pct}%",
+          help="Independent sigmoid probability for de-escalation track (β=40). Not coupled to escalation.")
+p3.metric("Tension",           f"{tension_pct:.1f}%",
+          help="√(esc × deesc) — high when BOTH tracks elevated simultaneously. "
+               ">15% flags possible market mispricing — signals conflict, examine which track has coherence support.")
+p4.metric("Esc raw score",     f"{esc_raw:.2f}",
           help="Sum of all decayed escalation signal weights (pre-velocity).")
-p4.metric("Velocity (24h)",            f"{velocity_arrow} {velocity_delta}",
-          help=f"Score change vs 24h ago. Velocity bonus applied to probability: +{velocity_bonus:.2f} pts. "
-               f"Rising scores get up to {30:.0f} pts bonus (VELOCITY_WEIGHT=0.30).")
-p5.metric("Active signals",            sig_count,
+p5.metric("Esc velocity (24h)", f"{esc_vel_arrow} {velocity_24h:+.1f}" if velocity_24h != 0 else "—",
+          help=f"Escalation score change vs 24h ago. Velocity bonus: +{velocity_bonus:.2f} pts.")
+p6.metric("Active signals",    sig_count,
           help="Number of signals with score > 0.01 in the 30-day window.")
 
-st.plotly_chart(chart_probability_gauge(esc_pct, deesc_pct), use_container_width=True)
-st.caption("⚠ Directional signal only — probabilities are uncalibrated until 6+ months of multi-layer history is available for back-testing.")
+st.plotly_chart(chart_probability_gauges(esc_pct, deesc_pct), use_container_width=True)
+st.caption("⚠ Directional signal only — each track is an independent probability, they no longer sum to 100%. Uncalibrated until 6+ months of multi-layer history.")
 
 st.divider()
 
