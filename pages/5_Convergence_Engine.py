@@ -223,19 +223,16 @@ def chart_probability_gauge(esc_pct, deesc_pct):
         textfont=dict(color="white", size=13, family="system-ui"),
     ))
     fig.add_vline(x=50, line_dash="dot", line_color="rgba(255,255,255,0.25)", line_width=1)
-    fig.update_layout(
-        **plotly_layout(height=80),
+    fig.update_layout(**plotly_layout(
+        height=80,
         xaxis=dict(range=[0, 100], ticksuffix="%", **axis_style()),
         yaxis=dict(showticklabels=False, **axis_style()),
         barmode="stack",
         showlegend=True,
-        legend=dict(
-            orientation="h", y=2.0, x=0,
-            font=dict(size=11, color="#94a3b8"),
-            bgcolor="rgba(0,0,0,0)",
-        ),
+        legend=dict(orientation="h", y=2.0, x=0,
+                    font=dict(size=11, color="#94a3b8"), bgcolor="rgba(0,0,0,0)"),
         margin=dict(l=0, r=0, t=30, b=0),
-    )
+    ))
     return fig
 
 
