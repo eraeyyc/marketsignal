@@ -101,26 +101,40 @@ S0 = {
     "ais_spoofing_high":    20.0,   # 5+ events — active jamming/spoofing campaign
 }
 
-# Sigmoid normalisation parameters (β=midpoint, α=steepness)
-# ⚠ PLACEHOLDER — β should equal historical average convergence score from back-test
-SIGMOID_BETA  = 100.0  # escalation midpoint — raw score at P=50%. High because
-                       # active-war conditions stack 6 signal layers simultaneously,
-                       # easily reaching 150-200 pts. Correct at current conflict level.
-DEESC_SIGMOID_BETA = 40.0  # de-escalation midpoint — lower because de-escalation signals
-                            # are structurally fewer/gentler. Full ceasefire-negotiation
-                            # scenario realistically peaks at ~60-70 pts (bizjet clusters +
-                            # VIP shuttle + GDELT improvement). β=40 maps that to ~95%,
-                            # and early signals (~14 pts) to ~10-15% — visible but not
-                            # alarming. Calibrated Mar 2026.
-SIGMOID_ALPHA = 0.08   # steepness (shared)
+# ── Ceiling normalisation ──────────────────────────────────────────────────────
+# Each track's raw score is divided by its theoretical maximum before the sigmoid.
+# This makes probabilities interpretable: 30% on either track means the same thing —
+# "30% of the maximum signal strength this track could ever produce."
+#
+# Without this, the old split-beta approach compensated for the structural imbalance
+# (escalation has ~6 signal layers, de-escalation ~2-3) inside the sigmoid, which
+# created a nonlinear distortion: de-escalation was massively amplified at low signal
+# levels and saturated earlier at high ones. The numbers weren't comparable.
+#
+# Ceiling normalisation does the same compensation linearly, before the sigmoid,
+# so the shape of the probability curve is identical for both tracks.
+#
+# ESC_MAX_PTS:   All 6 escalation layers firing simultaneously in active conflict.
+#                Traffic drop (15) + strategic lift (22) + ISR (18) + NOTAMs (20) +
+#                maritime anomalies (15) + GDELT escalation (20) + coherence bonus ≈ 200.
+# DEESC_MAX_PTS: All de-escalation signals firing in full ceasefire-negotiation scenario.
+#                Bizjet cluster (12) + VIP diplomatic flights (3×5=15) + route reopening (10) +
+#                NOTAM lifts (10) + GDELT de-escalation (20) + coherence ≈ 70.
+
+ESC_MAX_PTS   = 200.0
+DEESC_MAX_PTS = 70.0
+
+# Shared sigmoid steepness in normalised [0,1] space.
+# k=10 gives 50% prob at 50% of track ceiling, 90% at ~73%, 10% at ~27%.
+SIGMOID_STEEPNESS = 10.0
 
 # Velocity (score acceleration) parameters
-# A rising score gets a bonus proportional to its 24h rate of change.
-# This means a score that goes 10→20→40 is treated more urgently than a static 40,
-# which matches how intelligence analysts actually think about signal acceleration.
-VELOCITY_WEIGHT     = 0.30   # bonus = velocity_24h * this weight (if positive)
-VELOCITY_LOOKBACK_H = 24     # hours to look back for velocity comparison
-VELOCITY_MAX_BONUS  = 30.0   # hard cap on velocity bonus to prevent runaway amplification
+# Bonus is capped as a fraction of each track's ceiling so the amplification
+# is proportional: escalation cap = 15% of 200 = 30 pts; deesc cap = 15% of 70 ≈ 10 pts.
+VELOCITY_WEIGHT            = 0.30
+VELOCITY_LOOKBACK_H        = 24
+VELOCITY_MAX_BONUS         = ESC_MAX_PTS   * 0.15   # 30.0 pts for escalation
+DEESC_VELOCITY_MAX_BONUS   = DEESC_MAX_PTS * 0.15   # 10.5 pts for de-escalation
 
 # Sigmoid growth parameters for States
 STATE_L  = 2.0    # saturation ceiling multiplier on S_0
@@ -183,19 +197,21 @@ def state_score(s0, first_detected_at, signal_type, resolved_at=None):
 
 def track_probability(raw_score, track="escalation", velocity_bonus=0.0):
     """
-    Independent sigmoid normalisation for a single track.
+    Ceiling-normalised probability for a single track.
 
-    Each track uses its own beta reflecting structural differences in signal volume:
-      - Escalation  β=100: active war stacks 6 layers → 150-200 pts
-      - De-escalation β=40: ceasefire scenario peaks ~60-70 pts
+    Raw score is divided by the track's theoretical maximum before the sigmoid,
+    so both tracks use the same sigmoid shape. A 30% probability on either track
+    means the same thing: "30% of maximum signal strength for this track."
 
-    Returns a 0–1 probability for this track alone. No coupling to the other track.
-    "No signals" → (esc≈0%, deesc≈4%) which is clearly distinguishable from
-    "conflicting signals" → (esc≈50%, deesc≈50%).
+    Without this, split-beta compensation happens inside the sigmoid (nonlinear,
+    hard to reason about). Here it happens as a simple linear division first.
+
+    Velocity bonus is added to the raw score before normalisation, so it scales
+    consistently with the track's magnitude.
     """
-    beta     = DEESC_SIGMOID_BETA if track == "deescalation" else SIGMOID_BETA
-    adjusted = raw_score + velocity_bonus
-    prob     = 1.0 / (1.0 + math.exp(-SIGMOID_ALPHA * (adjusted - beta)))
+    ceiling = DEESC_MAX_PTS if track == "deescalation" else ESC_MAX_PTS
+    frac    = min((raw_score + velocity_bonus) / ceiling, 1.0)
+    prob    = 1.0 / (1.0 + math.exp(-SIGMOID_STEEPNESS * (frac - 0.5)))
     return round(prob, 4)
 
 
@@ -1105,8 +1121,9 @@ def compute_velocity(engine_conn, current_raw, track="escalation"):
     if row is None:
         return 0.0, 0.0
 
-    velocity_24h   = current_raw - row[0]
-    velocity_bonus = min(max(0.0, velocity_24h) * VELOCITY_WEIGHT, VELOCITY_MAX_BONUS)
+    max_bonus    = DEESC_VELOCITY_MAX_BONUS if track == "deescalation" else VELOCITY_MAX_BONUS
+    velocity_24h = current_raw - row[0]
+    velocity_bonus = min(max(0.0, velocity_24h) * VELOCITY_WEIGHT, max_bonus)
     return round(velocity_24h, 3), round(velocity_bonus, 3)
 
 
