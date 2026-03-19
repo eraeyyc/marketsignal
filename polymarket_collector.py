@@ -424,17 +424,25 @@ def print_status(conn: sqlite3.Connection):
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def reclassify(conn: sqlite3.Connection):
-    """Re-run classify_track on all markets in the DB and update signal_track."""
-    rows = conn.execute("SELECT condition_id, question FROM markets").fetchall()
-    updated = 0
-    for cid, question in rows:
-        track = classify_track(question)
-        conn.execute(
-            "UPDATE markets SET signal_track=? WHERE condition_id=?", (track, cid)
-        )
-        updated += 1
+    """Re-run classify_track and is_me_market on all markets. Updates track
+    classifications and deactivates markets that no longer pass the ME filter."""
+    rows = conn.execute("SELECT condition_id, question, active FROM markets").fetchall()
+    reclassified = 0
+    deactivated  = 0
+    for cid, question, active in rows:
+        if not is_me_market(question):
+            if active:
+                conn.execute("UPDATE markets SET active=0 WHERE condition_id=?", (cid,))
+                deactivated += 1
+        else:
+            track = classify_track(question)
+            conn.execute(
+                "UPDATE markets SET signal_track=?, active=1 WHERE condition_id=?",
+                (track, cid)
+            )
+            reclassified += 1
     conn.commit()
-    print(f"Reclassified {updated} markets.")
+    print(f"Reclassified {reclassified} markets, deactivated {deactivated} non-ME markets.")
     print_status(conn)
 
 
