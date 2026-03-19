@@ -350,7 +350,7 @@ def chart_gdelt_sparkline(df):
         height=200,
         yaxis=dict(title="Events/day", **axis_style()),
         yaxis2=dict(overlaying="y", side="right", range=[-10, 10],
-                    title="Goldstein", gridcolor="rgba(0,0,0,0)", **axis_style()),
+                    title="Goldstein", **axis_style(gridcolor="rgba(0,0,0,0)")),
     ))
     return fig
 
