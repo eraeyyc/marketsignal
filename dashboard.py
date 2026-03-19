@@ -532,24 +532,24 @@ except Exception:
     notam_anomaly_count = None
 
 m1, m2, m3, m4, m5, m6 = st.columns(6)
-m1.metric("Escalation P",
+m1.metric("Escalation",
           f"{esc_prob*100:.1f}%" if esc_prob else "—",
-          help="Convergence engine escalation probability (uncalibrated)")
-m2.metric("Raw Score",
+          help="Convergence engine escalation probability. The two tracks always sum to 100%.")
+m2.metric("De-escalation",
+          f"{deesc_prob*100:.1f}%" if deesc_prob else "—",
+          help="Convergence engine de-escalation probability. Competes with escalation (sum = 100%).")
+m3.metric("Raw Score",
           f"{esc_raw:.1f}" if esc_raw else "—",
-          help="Sum of all decayed signal weights")
-m3.metric("ME Aircraft",
+          help="Sum of all decayed escalation signal weights")
+m4.metric("ME Aircraft",
           total_me_ac if total_me_ac is not None else "—",
           help="Total aircraft across all ME regions, latest snapshot")
-m4.metric("Active NOTAM Restrictions",
+m5.metric("Active NOTAMs",
           active_notams if active_notams is not None else "—",
-          help="QR* codes currently in effect")
-m5.metric("GDELT Goldstein (30d)",
+          help="QR* restriction codes currently in effect")
+m6.metric("GDELT Goldstein (30d)",
           f"{gdelt_stats['goldstein']:+.2f}" if gdelt_stats else "—",
           help="Average Goldstein scale — negative = conflict-skewed")
-m6.metric("VIP Sightings (24h)",
-          vip_sighting_count if vip_sighting_count is not None else "—",
-          help="Watched tail numbers spotted in last 24 hours")
 
 st.divider()
 

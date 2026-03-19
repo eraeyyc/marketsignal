@@ -17,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 st.set_page_config(
     page_title="MarketSignal — Convergence Engine",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -195,40 +195,46 @@ def chart_raw_scores(df):
 
 
 def chart_probability_gauge(esc_pct, deesc_pct):
-    """Horizontal bar chart showing escalation vs de-escalation probability."""
+    """Single stacked bar showing escalation vs de-escalation competing for 100%."""
     esc_color = "#ef4444" if esc_pct > 60 else "#f97316" if esc_pct > 40 else "#94a3b8"
     fig = go.Figure()
+    # De-escalation segment (left)
     fig.add_trace(go.Bar(
         name="De-escalation",
-        x=[deesc_pct], y=["De-escalation"],
+        x=[deesc_pct], y=[""],
         orientation="h",
         marker=dict(color="#22c55e", opacity=0.85),
-        width=0.45,
-        hovertemplate="De-escalation: %{x:.1f}%<extra></extra>",
+        width=0.55,
+        hovertemplate=f"De-escalation: {deesc_pct:.1f}%<extra></extra>",
+        text=f"<b>{deesc_pct:.1f}%</b>" if deesc_pct >= 8 else "",
+        textposition="inside",
+        textfont=dict(color="white", size=13, family="system-ui"),
     ))
+    # Escalation segment (right)
     fig.add_trace(go.Bar(
         name="Escalation",
-        x=[esc_pct], y=["Escalation"],
+        x=[esc_pct], y=[""],
         orientation="h",
         marker=dict(color=esc_color, opacity=0.85),
-        width=0.45,
-        hovertemplate="Escalation: %{x:.1f}%<extra></extra>",
+        width=0.55,
+        hovertemplate=f"Escalation: {esc_pct:.1f}%<extra></extra>",
+        text=f"<b>{esc_pct:.1f}%</b>" if esc_pct >= 8 else "",
+        textposition="inside",
+        textfont=dict(color="white", size=13, family="system-ui"),
     ))
-    fig.add_vline(x=50, line_dash="dot", line_color="rgba(255,255,255,0.2)", line_width=1)
+    fig.add_vline(x=50, line_dash="dot", line_color="rgba(255,255,255,0.25)", line_width=1)
     fig.update_layout(
-        **plotly_layout(height=130),
+        **plotly_layout(height=80),
         xaxis=dict(range=[0, 100], ticksuffix="%", **axis_style()),
-        yaxis=axis_style(),
-        barmode="group",
-        showlegend=False,
-        annotations=[
-            dict(x=min(esc_pct + 1, 99), y="Escalation",
-                 text=f"<b>{esc_pct}%</b>", showarrow=False,
-                 xanchor="left", font=dict(color=esc_color, size=14)),
-            dict(x=min(deesc_pct + 1, 99), y="De-escalation",
-                 text=f"<b>{deesc_pct}%</b>", showarrow=False,
-                 xanchor="left", font=dict(color="#22c55e", size=14)),
-        ],
+        yaxis=dict(showticklabels=False, **axis_style()),
+        barmode="stack",
+        showlegend=True,
+        legend=dict(
+            orientation="h", y=2.0, x=0,
+            font=dict(size=11, color="#94a3b8"),
+            bgcolor="rgba(0,0,0,0)",
+        ),
+        margin=dict(l=0, r=0, t=30, b=0),
     )
     return fig
 
@@ -298,7 +304,6 @@ st.divider()
 
 # ── Big probability display ────────────────────────────────────────────────────
 st.subheader("Current Score")
-st.caption("⚠ UNCALIBRATED — probabilities are placeholder until GDELT back-test is complete")
 
 p1, p2, p3, p4, p5 = st.columns(5)
 
@@ -321,6 +326,7 @@ p5.metric("Active signals",            sig_count,
           help="Number of signals with score > 0.01 in the 30-day window.")
 
 st.plotly_chart(chart_probability_gauge(esc_pct, deesc_pct), use_container_width=True)
+st.caption("⚠ Directional signal only — probabilities are uncalibrated until 6+ months of multi-layer history is available for back-testing.")
 
 st.divider()
 
@@ -402,6 +408,25 @@ else:
 
         display_df = pd.DataFrame(rows)
 
+        # Apply sidebar filters
+        if mkt_track_filter == "Escalation":
+            display_df = display_df[display_df["Track"] == "Esc"]
+        elif mkt_track_filter == "De-escalation":
+            display_df = display_df[display_df["Track"] == "De-esc"]
+        if mkt_min_edge > 0:
+            display_df = display_df[display_df["Edge"].apply(
+                lambda v: abs(v) >= mkt_min_edge if v is not None else False
+            )]
+        display_df = display_df.head(mkt_max_rows)
+
+        n_shown = len(display_df)
+        n_total = len(rows)
+        st.caption(
+            f"Showing {n_shown} of {n_total} active markets"
+            + (f" · track: {mkt_track_filter}" if mkt_track_filter != "All" else "")
+            + (f" · min edge: {mkt_min_edge}%" if mkt_min_edge > 0 else "")
+        )
+
         def _style_edge(val):
             """Color edge cells by absolute magnitude (applied to numeric Edge column)."""
             try:
@@ -458,6 +483,12 @@ with st.sidebar:
     st.divider()
     history_hours = st.selectbox("History window", [12, 24, 48, 72, 168], index=2,
                                  format_func=lambda h: f"Last {h}h" if h < 168 else "Last 7 days")
+    st.divider()
+    st.markdown("**Market filters**")
+    mkt_track_filter = st.selectbox("Track", ["All", "Escalation", "De-escalation"])
+    mkt_min_edge = st.slider("Min |edge|%", 0, 30, 0, step=1,
+                              help="Hide markets where |Model% − Market%| is below this threshold")
+    mkt_max_rows = st.selectbox("Max rows", [25, 50, 100, 200, 500], index=1)
     st.divider()
     st.caption(f"Scores computed: {total_scores:,}")
     st.caption(f"Since: {earliest[:16] if earliest else '—'}")

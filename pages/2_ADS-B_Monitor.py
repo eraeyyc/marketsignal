@@ -16,7 +16,7 @@ from utils.styles import inject_css, page_header, plotly_layout, axis_style
 st.set_page_config(
     page_title="MarketSignal — ADS-B Monitor",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 inject_css()
 
@@ -218,12 +218,22 @@ st.subheader("Aircraft count by region")
 st.caption("Red = conflict zone  |  Indigo = Gulf/regional  |  Grey = other")
 st.plotly_chart(chart_current_counts(rows), use_container_width=True)
 
-# ── Metrics row ────────────────────────────────────────────────────────────────
+# ── Metrics row — top 5 regions by count, rest in expander ─────────────────────
 st.divider()
-cols = st.columns(len(rows))
-for col, (label, total_ac, airborne, on_ground, _, _json) in zip(cols, rows):
-    short = label.split(" /")[0]  # "Israel / Palestine" → "Israel"
+top_rows  = rows[:5]
+rest_rows = rows[5:]
+
+cols = st.columns(5)
+for col, (label, total_ac, airborne, on_ground, _, _json) in zip(cols, top_rows):
+    short = label.split(" /")[0]
     col.metric(short, total_ac, help=f"Airborne: {airborne}  |  Ground: {on_ground}")
+
+if rest_rows:
+    with st.expander(f"More regions ({len(rest_rows)})"):
+        extra_cols = st.columns(len(rest_rows))
+        for col, (label, total_ac, airborne, on_ground, _, _json) in zip(extra_cols, rest_rows):
+            short = label.split(" /")[0]
+            col.metric(short, total_ac, help=f"Airborne: {airborne}  |  Ground: {on_ground}")
 
 # ── Trend chart ────────────────────────────────────────────────────────────────
 st.divider()
