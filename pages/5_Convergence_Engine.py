@@ -267,17 +267,34 @@ TRACK_COLORS = {
 
 # ── Page ───────────────────────────────────────────────────────────────────────
 
-page_header(
-    "Convergence Engine",
-    "Aggregated escalation / de-escalation score across all signal layers",
-)
-
 # Check DB
 if not os.path.exists(ENGINE_DB):
     st.error("No convergence engine data yet. Run `python3 convergence_engine.py --loop` to start.")
     st.stop()
 
 total_scores, earliest = load_db_meta()
+
+# ── Sidebar (must be defined before page body references sidebar variables) ─────
+with st.sidebar:
+    st.markdown("## MarketSignal")
+    st.caption("Convergence Engine")
+    st.divider()
+    history_hours = st.selectbox("History window", [12, 24, 48, 72, 168], index=2,
+                                 format_func=lambda h: f"Last {h}h" if h < 168 else "Last 7 days")
+    st.divider()
+    st.markdown("**Market filters**")
+    mkt_track_filter = st.selectbox("Track", ["All", "Escalation", "De-escalation"])
+    mkt_min_edge = st.slider("Min |edge|%", 0, 30, 0, step=1,
+                              help="Hide markets where |Model% − Market%| is below this threshold")
+    mkt_max_rows = st.selectbox("Max rows", [25, 50, 100, 200, 500], index=1)
+    st.divider()
+    st.caption(f"Scores computed: {total_scores:,}")
+    st.caption(f"Since: {earliest[:16] if earliest else '—'}")
+
+page_header(
+    "Convergence Engine",
+    "Aggregated escalation / de-escalation score across all signal layers",
+)
 latest = load_latest_score()
 
 if not latest:
@@ -477,22 +494,6 @@ else:
 st.divider()
 
 # ── Score history ──────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## MarketSignal")
-    st.caption("Convergence Engine")
-    st.divider()
-    history_hours = st.selectbox("History window", [12, 24, 48, 72, 168], index=2,
-                                 format_func=lambda h: f"Last {h}h" if h < 168 else "Last 7 days")
-    st.divider()
-    st.markdown("**Market filters**")
-    mkt_track_filter = st.selectbox("Track", ["All", "Escalation", "De-escalation"])
-    mkt_min_edge = st.slider("Min |edge|%", 0, 30, 0, step=1,
-                              help="Hide markets where |Model% − Market%| is below this threshold")
-    mkt_max_rows = st.selectbox("Max rows", [25, 50, 100, 200, 500], index=1)
-    st.divider()
-    st.caption(f"Scores computed: {total_scores:,}")
-    st.caption(f"Since: {earliest[:16] if earliest else '—'}")
-
 history_df = load_score_history(history_hours)
 
 st.subheader(f"Score history — last {history_hours}h")
