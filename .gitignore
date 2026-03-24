@@ -58,3 +58,4 @@ env/
 
 # ── Streamlit ──────────────────────────────────────────────────────────────────
 .streamlit/secrets.toml
+gdelt_credentialsold.json

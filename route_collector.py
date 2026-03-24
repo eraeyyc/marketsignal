@@ -40,6 +40,7 @@ APP_ID             = os.environ.get("CIRIUM_FLEX_APP_ID", "")
 APP_KEY            = os.environ.get("CIRIUM_FLEX_APP_KEY", "")
 POLL_INTERVAL      = 86400   # once per day
 SCHEDULE_TTL_DAYS  = 7       # refresh schedule cache weekly
+BASELINE_DAYS      = 14      # days of history used to compute schedule baseline
 DROP_THRESHOLD     = 0.60    # >60% drop triggers flag
 MIN_CONSEC_DAYS    = 3       # must persist 3+ consecutive days
 LOOKBACK_DAYS      = 7       # rolling window for suspension check
@@ -157,37 +158,63 @@ def init_db(db_path):
 
 def fetch_schedule(dep, arr):
     """
-    GET schedule for a route. Returns dict: {airline_iata: flights_per_day}.
-    Uses schedules/rest/v1/json/flight/route/{dep}/{arr}.
-    The endpoint returns a weekly operating pattern — divide total by 7.
+    Build a baseline schedule by averaging BASELINE_DAYS of historical flight status data.
+    Returns dict: {airline_iata: flights_per_day}.
+
+    The Cirium Flex /schedules/ endpoint is not available on this plan.
+    Instead we query flightstatus for the past BASELINE_DAYS days and average
+    the operated flight counts per carrier as the baseline.
     """
-    url = f"{API_BASE}/schedules/rest/v1/json/flight/route/{dep}/{arr}"
-    try:
-        r = requests.get(url, params=_auth_params(), timeout=15)
-        if r.status_code == 404:
-            return {}
-        if r.status_code == 403:
-            print("  [API] 403 Forbidden — check APP_ID / APP_KEY")
-            return {}
-        r.raise_for_status()
-        data = r.json()
-        flights = data.get("scheduledFlights", [])
+    today = datetime.now(timezone.utc).date()
+    carrier_daily = {}  # {carrier: [count_day1, count_day2, ...]}
+    days_fetched = 0
 
-        # Count distinct flight numbers per carrier — this is flights per day
-        # The API returns flights that operate on at least one day of the week.
-        # Divide by 7 to get average daily frequency.
-        carrier_counts = {}
-        for f in flights:
-            carrier = f.get("carrierFsCode", "")
-            if carrier in WATCHED_AIRLINES:
-                carrier_counts[carrier] = carrier_counts.get(carrier, 0) + 1
+    for offset in range(1, BASELINE_DAYS + 1):
+        d = today - timedelta(days=offset)
+        url = (
+            f"{API_BASE}/flightstatus/rest/v2/json/route/status"
+            f"/{dep}/{arr}/dep/{d.year}/{d.month}/{d.day}"
+        )
+        try:
+            r = requests.get(url, params=_auth_params(), timeout=15)
+            if r.status_code == 404:
+                time.sleep(REQUEST_PAUSE)
+                continue
+            if r.status_code == 403:
+                print("  [API] 403 Forbidden — check APP_ID / APP_KEY")
+                return {}
+            r.raise_for_status()
+            statuses = r.json().get("flightStatuses", [])
+            days_fetched += 1
 
-        # Normalize to per-day average
-        return {k: round(v / 7, 2) for k, v in carrier_counts.items()}
+            # Count non-cancelled watched-carrier flights for this day
+            day_counts = {}
+            for f in statuses:
+                carrier = f.get("carrierFsCode", "")
+                if carrier not in WATCHED_AIRLINES:
+                    continue
+                if f.get("status", "") != "C":
+                    day_counts[carrier] = day_counts.get(carrier, 0) + 1
 
-    except requests.RequestException as e:
-        print(f"    [{dep}-{arr}] Schedule fetch error: {e}")
+            for carrier, count in day_counts.items():
+                carrier_daily.setdefault(carrier, []).append(count)
+
+        except requests.RequestException as e:
+            print(f"    [{dep}-{arr}] Baseline fetch error (day -{offset}): {e}")
+
+        time.sleep(REQUEST_PAUSE)
+
+    if days_fetched == 0:
         return {}
+
+    # Average across fetched days; carriers with no flights on some days get 0 for those days
+    result = {}
+    for carrier, counts in carrier_daily.items():
+        avg = sum(counts) / days_fetched
+        if avg > 0:
+            result[carrier] = round(avg, 2)
+
+    return result
 
 
 def fetch_route_status(dep, arr, date):
