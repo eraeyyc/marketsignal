@@ -535,10 +535,10 @@ except Exception:
 m1, m2, m3, m4, m5, m6 = st.columns(6)
 m1.metric("Escalation",
           f"{esc_prob*100:.1f}%" if esc_prob else "—",
-          help="Convergence engine escalation probability. The two tracks always sum to 100%.")
+          help="Convergence engine escalation probability. Independent of de-escalation — both tracks can be elevated simultaneously.")
 m2.metric("De-escalation",
           f"{deesc_prob*100:.1f}%" if deesc_prob else "—",
-          help="Convergence engine de-escalation probability. Competes with escalation (sum = 100%).")
+          help="Convergence engine de-escalation probability. Independent of escalation — does not sum to 100%.")
 m3.metric("Raw Score",
           f"{esc_raw:.1f}" if esc_raw else "—",
           help="Sum of all decayed escalation signal weights")

@@ -1,5 +1,5 @@
 # MarketSignal — Project Status
-Last updated: 2026-03-19 (Convergence engine v2 + Polymarket collector v2 + UX improvements)
+Last updated: 2026-03-25 (Going-dark resolution fix; ESC_MAX_PTS raised 200→400; stale dark events cleared)
 
 ---
 
@@ -68,18 +68,37 @@ Airspace restriction filings — leading indicator, hours before kinetic events.
 - Run with: `python3 notam_collector.py --loop`
 - Systemd service: `notam-collector` (enabled and running on VPS)
 
+### Stage 2d: Maritime / AIS Layer — DONE ✓ (pending first run)
+AIS vessel tracking via aisstream.io WebSocket stream.
+- `ais_collector.py` — streams 10 min every 30 min, stores to `ais_events.db`
+- 5 regions: Persian Gulf, Strait of Hormuz, Red Sea, Gulf of Aden, Arabian Sea
+- Tanker/cargo density vs 7-day same-hour baseline — drop >30% → MEDIUM, >50% → HIGH
+- Military vessel surge >2× baseline → HIGH escalation signal
+- GPS spoofing detection: SOG >50kn or position jump >50nm flagged
+- MMSI watchlist: `VIP Vessels.csv` (8 vessels: Iranian frigates, USNS logistics ships)
+- `pages/6_Maritime_Monitor.py` — counts trend, watchlist sightings map, spoofing log
+- Auth: `AISSTREAM_API_KEY` in `.env` (free tier at aisstream.io)
+- Run: `python3 ais_collector.py --loop`
+- Systemd: `ais-collector.service`
+- **Baseline needs ~7 days** before anomaly detection activates
+- **Future:** satellite AIS for Arabian Sea gaps; event volume weighting on GDELT signal
+
 ### Stage 2e: Route Suspension Collector — DONE ✓ (pending first run)
-Monitors scheduled vs. actual operated flights for 13 watched airlines across all
-ME airport pairs. A sustained route suspension is a leading indicator — airlines pull
-service quietly before governments announce closures.
+Monitors actual operated flights for 13 watched airlines across all ME airport pairs.
+A sustained route suspension is a leading indicator — airlines pull service quietly
+before governments announce closures.
 - `route_collector.py` — polls Cirium Flex API daily
-- Compares scheduled vs. operated flights over 7-day rolling window
-- Flags when operated flights drop >60% below schedule for 3+ consecutive days
+- **Baseline approach (fixed 2026-03-24):** Cirium Flex `/schedules/` endpoint returns
+  404 on this plan. Replaced with a 14-day rolling historical baseline — averages
+  operated flights per carrier per route using `/flightstatus/historical/` data.
+  Same 60% drop + 3 consecutive day logic; only the schedule source changed.
 - Stores in `route_events.db` with `first_detected_at` + `last_confirmed_at`
 - Feeds into convergence engine as `route_suspension` signals (λ=0.12/day, Event type)
-- Auth: Cirium Flex API — `appId` + `appKey` query params
+- Auth: Cirium Flex API — `appId` + `appKey` query params (`CIRIUM_FLEX_APP_ID`, `CIRIUM_FLEX_APP_KEY` in `.env`)
 - Base URL: `https://api.flightstats.com/flex`
-- Run: `python3 route_collector.py --refresh` (schedule cache), then `--loop`
+- Run: `python3 route_collector.py --refresh` (build baseline), then `--loop`
+- `pages/7_Route_Monitor.py` — route suspension table, active flags, per-route trend chart
+- Systemd: `route-collector.service`
 - Airport pairs monitored (both directions): TLV, AMM, BGW, KWI, BAH, DOH, DXB,
   AUH, MCT, IKA, THR, BEY, CAI, IST
 
@@ -155,6 +174,25 @@ de-escalation scores every 10 minutes.
 - Outputs to: `convergence_engine.db`
 - Systemd: `convergence-engine.service` (deploy/convergence-engine.service)
 
+### Stage 4: Polymarket Integration — DONE ✓ (v2 — Claude classification 2026-03-19)
+Live ME market prices surfaced alongside model probabilities so edge is visible in one view.
+- `polymarket_collector.py` (v2) — polls Gamma API, cheap geography pre-filter, then Claude
+  API classifies whether each market is predictable by the signal system and which track it
+  belongs to. Falls back to keyword classification when `ANTHROPIC_API_KEY` not set or API down.
+- Classification cached per-market (`classified_by` column) — subsequent polls only update prices
+  unless `--reclassify` is passed to force a full re-run
+- New DB columns: `classified_by` (claude/keyword), `classify_reason` (10-word summary)
+- Claude understands signal-system predictability: military strikes/airstrikes/ceasefire deals YES;
+  elections/UN votes/economic sanctions/casualty counts NO
+- `polymarket_markets.db` — markets + price_history tables (SQLite, local only)
+- Convergence Engine page: sidebar filters (track, min |edge|%, max rows), clickable links
+- Overview dashboard: top 3 opportunity cards with edge color-coding
+- Run with: `python3 polymarket_collector.py --loop` (polls every 15 min)
+- Reclassify: `python3 polymarket_collector.py --reclassify`
+- Requires: `ANTHROPIC_API_KEY` in `.env` (keyword fallback if missing)
+- Systemd: `polymarket-collector.service`
+- **Phase 2 (future):** Kelly criterion position sizing, edge threshold alerts, price history charts
+
 ### Schema: last_confirmed_at + resolved_at — DONE ✓
 All signal tables have `last_confirmed_at` (updated each poll while active) and
 `resolved_at` (set when condition clears). Affected tables: `anomalies`,
@@ -174,6 +212,8 @@ Run with: `streamlit run dashboard.py`
 - **Page 5:** Convergence Engine — probability display, score history chart, Polymarket ME
   market table (Edge, Bet, links), live signal breakdown, coherence multiplier status,
   divergence flag, scoring explainer
+- **Page 6:** Maritime Monitor — AIS vessel counts, watchlist sightings map, spoofing log
+- **Page 7:** Route Monitor — airline route suspension table, active flags, per-route trend chart
 - **Home:** 7th metric tile — "Top Poly Edge" (largest |model − market| opportunity)
 
 ---
@@ -198,6 +238,12 @@ what period was compared.
 event count is more significant than the same drop at baseline volume. Would multiply
 signal score by `log(count_ratio) + 1`. Not done yet because Goldstein-only already
 validates correctly and volume weighting needs backtest re-validation.
+
+### notam_check.py — hardcoded API key ⚠
+`notam_check.py` (ICAO Data Services test utility) has a hardcoded API key in the source.
+It's not in `.gitignore` and is committed to the repo. If the key is sensitive, revoke
+it and move it to `.env`. This file is a one-off testing script; consider deleting it
+once the NOTAM pipeline is confirmed stable.
 
 ### ADS-B coverage gaps — conflict zones show zero
 Lebanon/Syria and Yemen/Red Sea consistently return 0 — transponders off in active
@@ -280,6 +326,20 @@ Complete overhaul of `dashboard.py` main page:
 - Maritime Monitor: added shared styles + dark theme
 - Removed Inter font override (user preference)
 
+### Route collector schedules fix (2026-03-24) ✓
+The Cirium Flex `/schedules/` endpoint returns 404 on this plan tier. `fetch_schedule()`
+was replaced with `build_baseline_from_history()` — uses the last 14 days of actual
+`/flightstatus/historical/` data as the operated-flight baseline instead. Same 60%-drop +
+3-consecutive-day suspension logic; only the baseline source changed. Route collector is
+now unblocked and ready for its first live run (`--refresh` then `--loop`).
+
+Also in this commit:
+- `pages/7_Route_Monitor.py` added (route suspension dashboard — already existed as
+  `6_Route_Monitor.py` but had a Streamlit page-number collision with Maritime Monitor;
+  renamed to 7)
+- `convergence_engine_v2_patches.py` and `polymarket_collector_v2.py` added to repo
+  as reference artifacts (v2 code already live in main files — safe to delete)
+
 ### UX improvements (2026-03-19) ✓
 - **Overview:** added De-escalation metric card, renamed "Escalation P" → "Escalation",
   "Active NOTAM Restrictions" → "Active NOTAMs"
@@ -298,6 +358,31 @@ See Stage 3 and Stage 4 sections above for full detail. Key changes:
 - `compute_edge()` function discounts edge under high tension
 - Auto-migrated DB schema (no manual migration needed)
 
+### Going-dark resolution fix + ceiling recalibration (2026-03-25) ✓
+Three convergence engine issues identified from live data inspection:
+
+**1. Going-dark events not resolving (bug)**
+`adsb_collector.py`: when a VIP aircraft reappeared, `vip_last_seen.dark_flagged` was reset
+to 0 (allowing new dark events) but `vip_dark_events.resolved_at` was never set. Aircraft
+that went dark and reappeared multiple times accumulated stale active events. Fix: added
+`UPDATE vip_dark_events SET resolved_at = ? WHERE icao24 = ? AND resolved_at IS NULL` in
+two places — when aircraft is seen (in `process_watchlist`) and when creating a new dark
+event (in `check_going_dark`, to close any leftover from the prior episode).
+Stale events manually resolved on VPS (A6-PFA × 3, SU-GGG × 1).
+
+**2. ESC_MAX_PTS = 200 too low (model calibration)**
+Live data showed esc_raw regularly hitting 340-350 with `ESC_MAX_PTS=200`, permanently
+saturating the sigmoid at ~99%. The original 200pt estimate was based on a simplified
+"6 layers" model that didn't account for multi-signal depth within each layer (e.g.
+up to 4 going-dark aircraft × 30pts = 120pts alone; 19 NOTAM FIRs × 10pts = 190pts).
+Raised `ESC_MAX_PTS` to **400**. New curve: 50% prob at 200pts raw, 92% at 300pts,
+99% at 380pts. Gives meaningful spread across realistic signal levels.
+
+**3. Multiple engine instances accumulating (resolved by restart)**
+Before a clean restart, 3 different process versions were writing to the scores table
+simultaneously (3-5 rows per 10-minute window from different code versions). Resolved
+by the systemd restart on 2026-03-25. Now 1 row per cycle as expected.
+
 ### Pending UI improvements (not yet done)
 - **Stacked signal composition chart** — shows which signal types are driving the score
   over time. A spike that's all-NOTAM is less significant than a multi-layer convergence.
@@ -305,39 +390,6 @@ See Stage 3 and Stage 4 sections above for full detail. Key changes:
 ---
 
 ## What's Planned But Not Started
-
-### Stage 2d: Maritime / AIS Layer — DONE ✓ (pending first run)
-AIS vessel tracking via aisstream.io WebSocket stream.
-- `ais_collector.py` — streams 10 min every 30 min, stores to `ais_events.db`
-- 5 regions: Persian Gulf, Strait of Hormuz, Red Sea, Gulf of Aden, Arabian Sea
-- Tanker/cargo density vs 7-day same-hour baseline — drop >30% → MEDIUM, >50% → HIGH
-- Military vessel surge >2× baseline → HIGH escalation signal
-- GPS spoofing detection: SOG >50kn or position jump >50nm flagged
-- MMSI watchlist: `VIP Vessels.csv` (8 vessels: Iranian frigates, USNS logistics ships)
-- `pages/6_Maritime_Monitor.py` — counts trend, watchlist sightings map, spoofing log
-- Auth: `AISSTREAM_API_KEY` in `.env` (free tier at aisstream.io)
-- Run: `python3 ais_collector.py --loop`
-- Systemd: `ais-collector.service`
-- **Baseline needs ~7 days** before anomaly detection activates
-- **Future:** add event volume weighting to GDELT signal; satellite AIS for Arabian Sea gaps
-
-### Stage 4: Polymarket Integration — DONE ✓ (v2 — Claude classification 2026-03-19)
-Live ME market prices surfaced alongside model probabilities so edge is visible in one view.
-- `polymarket_collector.py` (v2) — polls Gamma API, cheap geography pre-filter, then Claude
-  API classifies whether each market is predictable by the signal system and which track it
-  belongs to. Falls back to keyword classification when `ANTHROPIC_API_KEY` not set or API down.
-- Classification cached per-market (`classified_by` column) — subsequent polls only update prices
-  unless `--reclassify` is passed to force a full re-run
-- New DB columns: `classified_by` (claude/keyword), `classify_reason` (10-word summary)
-- Claude understands signal-system predictability: military strikes/airstrikes/ceasefire deals YES;
-  elections/UN votes/economic sanctions/casualty counts NO
-- `polymarket_markets.db` — markets + price_history tables (SQLite, local only)
-- Convergence Engine page: sidebar filters (track, min |edge|%, max rows), clickable links
-- Overview dashboard: top 3 opportunity cards with edge color-coding
-- Run with: `python3 polymarket_collector.py --loop` (polls every 15 min)
-- Reclassify: `python3 polymarket_collector.py --reclassify`
-- Requires: `ANTHROPIC_API_KEY` in `.env` (keyword fallback if missing)
-- **Phase 2 (future):** Kelly criterion position sizing, edge threshold alerts, price history charts
 
 ### Stage 5: Planespotter Layer (manual for now)
 Telegram channels and planespotter forums pick up events faster than ADS-B.
@@ -351,6 +403,9 @@ Worth monitoring manually until volume justifies automation.
 ```bash
 python3 adsb_collector.py --loop        # ADS-B + strategic tracking
 python3 notam_collector.py --loop       # NOTAMs
+python3 ais_collector.py --loop         # AIS maritime (needs ~7 days to build baseline)
+python3 route_collector.py --refresh    # Build route baseline first (once)
+python3 route_collector.py --loop       # Route suspension monitoring (daily)
 python3 convergence_engine.py --loop    # Convergence scoring
 python3 polymarket_collector.py --loop  # Polymarket ME market prices (every 15 min)
 streamlit run dashboard.py              # Dashboard at localhost:8501
@@ -360,8 +415,11 @@ streamlit run dashboard.py              # Dashboard at localhost:8501
 ```bash
 systemctl start adsb-collector
 systemctl start notam-collector
-systemctl start marketsignal-dashboard
+systemctl start ais-collector
 systemctl start convergence-engine
+systemctl start polymarket-collector
+systemctl start route-collector
+systemctl start marketsignal-dashboard
 
 # Logs
 tail -f /var/log/marketsignal/adsb.log
@@ -381,6 +439,9 @@ pages/
   4_Strategic_Monitor.py        VIP + strategic type clustering dashboard
   5_Convergence_Engine.py       Aggregated score, signal breakdown, coherence status
   6_Maritime_Monitor.py         AIS vessel counts, watchlist sightings, spoofing events
+  7_Route_Monitor.py            Airline route suspension table, flags, per-route trend
+utils/
+  styles.py                     Shared Streamlit CSS + Plotly theme helpers
 gdelt_collector.py              BigQuery → SQLite pipeline
 gdelt_verify.py                 Historical event verification (5 events)
 gdelt_query.py                  Ad-hoc date range query tool
@@ -389,6 +450,7 @@ ais_collector.py                aisstream.io AIS maritime collection + anomaly d
 VIP Vessels.csv                 Maritime watchlist (Iranian frigates, USNS logistics ships)
 adsb_collector.py               OpenSky polling + Mode A/B detection
 notam_collector.py              Cirium Sky API NOTAM collection
+notam_check.py                  ICAO Data Services API sanity-check utility (ad-hoc testing)
 convergence_engine.py           Stage 3 scoring daemon
 polymarket_collector.py         Polymarket Gamma API → SQLite (polls every 15 min)
 route_collector.py              Cirium Flex API route suspension collector
@@ -401,8 +463,17 @@ deploy/
   adsb-collector.service        systemd service
   notam-collector.service       systemd service
   ais-collector.service         systemd service
+  convergence-engine.service    systemd service
+  polymarket-collector.service  systemd service
+  route-collector.service       systemd service
   marketsignal-dashboard.service systemd service
 STATUS.md                       This file
+```
+
+### Leftover reference files (safe to delete)
+```
+convergence_engine_v2_patches.py   v2 patch notes — already merged into convergence_engine.py
+polymarket_collector_v2.py         Identical to polymarket_collector.py — leftover from dev session
 ```
 
 ## Files NOT in Repo (local/VPS only)

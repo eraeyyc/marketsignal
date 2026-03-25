@@ -679,6 +679,11 @@ def process_vip_sightings(conn, region_id, region_label, aircraft):
                 last_lon     = excluded.last_lon,
                 dark_flagged = 0
         """, (icao, vip["tail"], vip["operator"], now, region_id, a["lat"], a["lon"]))
+        # Aircraft reappeared — close any open going-dark event so the signal decays properly
+        conn.execute(
+            "UPDATE vip_dark_events SET resolved_at = ? WHERE icao24 = ? AND resolved_at IS NULL",
+            (now, icao)
+        )
         hits.append(vip)
     conn.commit()
     return hits
@@ -701,6 +706,11 @@ def check_going_dark(conn):
             hours_dark = (now - last_dt).total_seconds() / 3600
         except Exception:
             hours_dark = 0
+        # Close any previous unresolved dark event for this aircraft before creating a new one
+        conn.execute(
+            "UPDATE vip_dark_events SET resolved_at = ? WHERE icao24 = ? AND resolved_at IS NULL",
+            (now_str, icao)
+        )
         conn.execute("""
             INSERT INTO vip_dark_events
                 (detected_at, icao24, tail_number, operator,

@@ -114,14 +114,19 @@ S0 = {
 # Ceiling normalisation does the same compensation linearly, before the sigmoid,
 # so the shape of the probability curve is identical for both tracks.
 #
-# ESC_MAX_PTS:   All 6 escalation layers firing simultaneously in active conflict.
-#                Traffic drop (15) + strategic lift (22) + ISR (18) + NOTAMs (20) +
-#                maritime anomalies (15) + GDELT escalation (20) + coherence bonus ≈ 200.
+# ESC_MAX_PTS:   Realistic maximum when all escalation layers fire simultaneously.
+#                Going-dark (4 aircraft × 30 = 120) + NOTAM restrictions (up to 19 FIRs × 10 = 190,
+#                but typically 5-10 active = 50-100) + ADS-B traffic drops (9 regions × ~14 = ~60)
+#                + AIS spoofing HIGH (20) + GDELT escalation (~20) + coherence bonuses (~50-100).
+#                Original estimate of 200 was based on a simplified 6-layer model that did not
+#                account for multi-signal depth within each layer. Live data confirmed raw scores
+#                regularly exceeded 300 with ESC_MAX_PTS=200, saturating the sigmoid at ~99%.
+#                Raised to 400 (2026-03-25) — gives 50% prob at 200pts, 92% at 300pts, 99% at 380pts.
 # DEESC_MAX_PTS: All de-escalation signals firing in full ceasefire-negotiation scenario.
 #                Bizjet cluster (12) + VIP diplomatic flights (3×5=15) + route reopening (10) +
 #                NOTAM lifts (10) + GDELT de-escalation (20) + coherence ≈ 70.
 
-ESC_MAX_PTS   = 200.0
+ESC_MAX_PTS   = 400.0
 DEESC_MAX_PTS = 70.0
 
 # Shared sigmoid steepness in normalised [0,1] space.
