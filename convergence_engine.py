@@ -303,6 +303,7 @@ def read_vip_sightings(adsb_conn):
         FROM vip_sightings
         WHERE detected_at > ?
         GROUP BY icao24, region
+        ORDER BY last_seen DESC
     """, (_cutoff(),)).fetchall()
 
     now = datetime.now(timezone.utc)
@@ -310,7 +311,12 @@ def read_vip_sightings(adsb_conn):
     signals = []
 
     for icao, tail, operator, category, sig_val, region, label, first_seen, last_seen in rows:
-        key = (icao, region)
+        # State categories: deduplicate per (aircraft, region) — same ISR aircraft can
+        # legitimately operate in multiple distinct theaters simultaneously.
+        # Event categories: deduplicate per aircraft only — one diplomatic signal per aircraft,
+        # using the most recent region (rows sorted DESC). Prevents overlapping bounding boxes
+        # (e.g. SAU/GULF/IRN all cover the Persian Gulf) from inflating the count 3×.
+        key = (icao, region) if category in STATE_CATEGORIES else icao
         if key in seen:
             continue
         seen[key] = True
