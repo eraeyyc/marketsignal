@@ -98,7 +98,9 @@ def _add_column(conn, table, column, col_type):
 
 
 def init_db(db_path):
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")   # concurrent reads while writing
+    conn.execute("PRAGMA busy_timeout=30000") # 30s wait if writer is busy
 
     # Schedule baseline cache — refreshed weekly
     conn.execute("""
