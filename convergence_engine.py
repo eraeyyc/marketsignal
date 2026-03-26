@@ -46,6 +46,10 @@ ENGINE_DB     = "convergence_engine.db"
 POLL_INTERVAL = 600          # 10 minutes
 SIGNAL_WINDOW_DAYS = 30      # ignore signals older than this
 COHERENCE_FLOOR = 2.0        # minimum score per signal before coherence fires
+INTRA_TYPE_DECAY = 0.65      # diminishing returns within a (type, category) group:
+                              # 1st signal = full value, 2nd = 65%, 3rd = 42%, 4th = 27%...
+                              # Prevents a 4th going-dark aircraft from adding as much certainty
+                              # as the 1st — corroborating evidence has diminishing marginal value.
 
 # ── Lambda values (per-day decay rates, Events only) ───────────────────────────
 # ⚠ PLACEHOLDER — calibrate via GDELT back-test before trading
@@ -766,21 +770,31 @@ def read_spoofing_events(ais_conn):
         return []
 
     from collections import defaultdict
-    by_region = defaultdict(list)
+    # Track distinct MMSIs and timestamps per region.
+    # Counting distinct vessels (not raw events) prevents broken AIS transponders
+    # that broadcast the 102.3 kn sentinel value (AIS SOG field = 1023, meaning
+    # "unavailable") from inflating the cluster size. One broken transponder that
+    # emits 400 bad rows still counts as 1 affected vessel.
+    by_region_mmsi       = defaultdict(set)
+    by_region_timestamps = defaultdict(list)
+    by_region_label      = {}
     for mmsi, name, lat, lon, atype, detail, detected_at in rows:
         rid, rlabel = _spoof_region(lat, lon)
-        by_region[(rid, rlabel)].append(detected_at)
+        by_region_mmsi[(rid, rlabel)].add(mmsi)
+        by_region_timestamps[(rid, rlabel)].append(detected_at)
+        by_region_label[(rid, rlabel)] = rlabel
 
     signals = []
-    for (rid, rlabel), timestamps in by_region.items():
-        count       = len(timestamps)
+    for (rid, rlabel), mmsi_set in by_region_mmsi.items():
+        timestamps  = by_region_timestamps[(rid, rlabel)]
+        vessel_count = len(mmsi_set)   # distinct affected vessels
         most_recent = max(timestamps)
         first       = min(timestamps)
 
-        if count >= 5:
+        if vessel_count >= 5:
             sev_key  = "ais_spoofing_high"
             severity = "HIGH"
-        elif count >= 2:
+        elif vessel_count >= 2:
             sev_key  = "ais_spoofing_medium"
             severity = "MEDIUM"
         else:
@@ -805,7 +819,7 @@ def read_spoofing_events(ais_conn):
             "last_confirmed_at": most_recent,
             "resolved_at":       None,
             "severity":          severity,
-            "detail":            f"{count} spoofing event(s) in window",
+            "detail":            f"{vessel_count} vessel(s) affected in window",
         })
 
     return signals
@@ -991,6 +1005,37 @@ def _coherence_zone(region):
 
 # ── Scoring ────────────────────────────────────────────────────────────────────
 
+def apply_diminishing_returns(signals):
+    """
+    Within each (type, category) group, signals are sorted by score descending
+    and multiplied by INTRA_TYPE_DECAY^i.  The highest-scoring instance keeps
+    full value; each additional corroborating instance contributes progressively
+    less — reflecting that a 4th going-dark aircraft adds less certainty than the
+    1st, and a 4th spoofing region adds less than the 1st.
+
+    Groups by (type, category) rather than type alone so that e.g. type_surge
+    strategic_lift and type_surge tanker don't decay each other (they represent
+    different phenomena), while three tanker surges across different regions do.
+
+    Returns a new list of signals with adjusted scores; originals are not mutated.
+    """
+    from collections import defaultdict
+    by_group = defaultdict(list)
+    for s in signals:
+        by_group[(s["type"], s["category"])].append(s)
+
+    result = []
+    for group in by_group.values():
+        group.sort(key=lambda s: s["score"], reverse=True)
+        for i, sig in enumerate(group):
+            factor = INTRA_TYPE_DECAY ** i
+            s = dict(sig)
+            s["score"] = round(s["score"] * factor, 4)
+            s["diminishing_factor"] = round(factor, 3)
+            result.append(s)
+    return result
+
+
 def calculate_scores(signals):
     """
     Sum decayed signal scores by track.
@@ -1009,8 +1054,10 @@ def calculate_scores(signals):
     esc_total   = 0.0
     deesc_total = 0.0
 
-    esc_signals   = [s for s in signals if s["track"] == "escalation"]
-    deesc_signals = [s for s in signals if s["track"] == "deescalation"]
+    esc_signals   = apply_diminishing_returns(
+                        [s for s in signals if s["track"] == "escalation"])
+    deesc_signals = apply_diminishing_returns(
+                        [s for s in signals if s["track"] == "deescalation"])
 
     # Base sums
     for s in esc_signals:
