@@ -269,7 +269,7 @@ def refresh_schedules(conn, force=False):
         oldest = conn.execute(
             "SELECT MIN(cached_at) FROM route_schedules"
         ).fetchone()[0]
-        if oldest and oldest > cutoff:
+        if oldest is not None and oldest > cutoff:
             return  # cache is fresh
 
     print(f"  Refreshing schedule cache ({len(ROUTE_PAIRS)} route pairs)...")

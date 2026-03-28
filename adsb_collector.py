@@ -720,9 +720,25 @@ def check_going_dark(conn):
         conn.execute("UPDATE vip_last_seen SET dark_flagged = 1 WHERE icao24 = ?", (icao,))
         print(f"  [VIP DARK] {tail or icao} ({operator}) — last seen {last_seen[:16]} in {last_region} ({hours_dark:.0f}h ago)")
 
+    # Update hours_dark and last_confirmed_at for aircraft already flagged as dark
+    still_dark = conn.execute("""
+        SELECT vs.icao24, vs.last_seen_at
+        FROM vip_last_seen vs
+        WHERE vs.dark_flagged = 1
+    """).fetchall()
+    for icao, last_seen in still_dark:
+        try:
+            last_dt    = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+            hours_dark = (now - last_dt).total_seconds() / 3600
+        except Exception:
+            hours_dark = 0
+        conn.execute("""
+            UPDATE vip_dark_events
+            SET hours_dark = ?, last_confirmed_at = ?
+            WHERE icao24 = ? AND resolved_at IS NULL
+        """, (round(hours_dark, 1), now_str, icao))
+
     conn.commit()
-    if not rows:
-        pass  # silent when no going-dark events
 
 
 # ── Mode B: strategic type clustering ──────────────────────────────────────────

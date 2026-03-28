@@ -363,7 +363,13 @@ def read_vip_sightings(adsb_conn):
         else:
             # ── Event logic (diplomatic / strategic_lift / unknown) ────────
             s0    = S0["vip_sighting"]
-            score = event_score(s0, "bizjet", last_seen)
+            if category == "diplomatic":
+                lam_key = "gdelt_deesc"      # λ=0.08 — peace talks persist ~9 days
+            elif category == "strategic_lift":
+                lam_key = "strategic_lift"   # λ=0.03 — airlifts are sustained ops (~23 days)
+            else:
+                lam_key = "bizjet"           # λ=0.10 — generic sighting
+            score = event_score(s0, lam_key, last_seen)
             if score < 0.01:
                 continue
             track = "deescalation" if category == "diplomatic" else "escalation"

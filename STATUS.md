@@ -1,5 +1,5 @@
 # MarketSignal — Project Status
-Last updated: 2026-03-25 (Going-dark resolution fix; ESC_MAX_PTS raised 200→400; stale dark events cleared)
+Last updated: 2026-03-28 (Bug fixes: hours_dark live update, VIP lambda correction, route cache guard)
 
 ---
 
@@ -215,6 +215,27 @@ Run with: `streamlit run dashboard.py`
 - **Page 6:** Maritime Monitor — AIS vessel counts, watchlist sightings map, spoofing log
 - **Page 7:** Route Monitor — airline route suspension table, active flags, per-route trend chart
 - **Home:** 7th metric tile — "Top Poly Edge" (largest |model − market| opportunity)
+
+---
+
+## Recent Changes (2026-03-28 — bug fixes)
+
+### 1. ADS-B: hours_dark frozen at detection snapshot — FIXED ✓
+`check_going_dark()` only ran for `dark_flagged = 0` aircraft — once flagged, `hours_dark`
+and `last_confirmed_at` were never updated. VQ-BJO showed "24h dark" despite being dark 11 days.
+Fix: added a second update loop at the end of `check_going_dark()` that refreshes both fields
+for all currently-flagged dark aircraft on every poll.
+
+### 2. Convergence engine: VIP diplomatic/strategic_lift using wrong decay lambda — FIXED ✓
+`event_score()` was called with `"bizjet"` (λ=0.10/day, ~7d half-life) for ALL non-state VIP
+categories including diplomatic and strategic_lift. Fixed:
+- `diplomatic` → `"gdelt_deesc"` (λ=0.08/day, ~9d half-life) — peace talks persist longer
+- `strategic_lift` → `"strategic_lift"` (λ=0.03/day, ~23d half-life) — airlifts are sustained ops
+- unknown category → unchanged `"bizjet"`
+
+### 3. Route collector: empty schedule table silently skips refresh — FIXED ✓
+`MIN(cached_at)` returns `None` on empty table. Old guard `if oldest and oldest > cutoff`
+treated `None` as truthy-failing and skipped the refresh. Fixed to `if oldest is not None`.
 
 ---
 
