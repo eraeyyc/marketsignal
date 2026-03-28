@@ -77,7 +77,7 @@ footer { visibility: hidden; }
     background: rgba(128,128,128,0.10);
 }
 [data-testid="metric-container"] label {
-    font-size: 11px !important;
+    font-size: 12px !important;
     font-weight: 600 !important;
     letter-spacing: 0.06em !important;
     text-transform: uppercase !important;
@@ -85,7 +85,7 @@ footer { visibility: hidden; }
 }
 [data-testid="metric-container"] [data-testid="stMetricValue"] {
     font-size: 22px !important;
-    font-weight: 700 !important;
+    font-weight: 800 !important;
     letter-spacing: -0.02em !important;
 }
 
@@ -230,7 +230,7 @@ def page_header(title: str, subtitle: str = "", timestamp: str = ""):
         if timestamp else ""
     )
     sub_html = (
-        f'<div style="font-size:13px;color:{_TEXT_MID};margin-top:4px;font-weight:400">'
+        f'<div style="font-size:14px;color:{_TEXT_MID};margin-top:4px;font-weight:400">'
         f'{subtitle}</div>'
         if subtitle else ""
     )
@@ -305,12 +305,12 @@ def status_strip(collectors: list):
             f'box-shadow:{glow};display:inline-block;flex-shrink:0"></span>'
             f'<span style="font-size:11px;font-weight:600;letter-spacing:0.05em;'
             f'text-transform:uppercase;color:{_TEXT_MID}">{label}</span>'
-            f'<span style="font-size:9px;font-weight:800;color:{color};'
+            f'<span style="font-size:10px;font-weight:800;color:{color};'
             f'letter-spacing:0.07em">{badge}</span>'
             f'</div>'
         )
     st.markdown(
-        f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px">'
+        f'<div style="display:flex;gap:9px;flex-wrap:wrap;margin-bottom:20px">'
         f'{dots}</div>',
         unsafe_allow_html=True,
     )
