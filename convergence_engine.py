@@ -45,7 +45,7 @@ ENGINE_DB     = "convergence_engine.db"
 
 POLL_INTERVAL = 600          # 10 minutes
 SIGNAL_WINDOW_DAYS = 30      # ignore signals older than this
-COHERENCE_FLOOR = 2.0        # minimum score per signal before coherence fires
+COHERENCE_FLOOR = 4.0        # minimum score per signal before coherence fires
 INTRA_TYPE_DECAY = 0.65      # diminishing returns within a (type, category) group:
                               # 1st signal = full value, 2nd = 65%, 3rd = 42%, 4th = 27%...
                               # Prevents a 4th going-dark aircraft from adding as much certainty
@@ -376,7 +376,7 @@ def read_vip_sightings(adsb_conn):
             signals.append({
                 "type":             "vip_sighting",
                 "signal_class":     "event",
-                "category":         "bizjet",
+                "category":         "vip_sighting",
                 "track":            track,
                 "region":           region,
                 "region_label":     label or region,
@@ -781,21 +781,30 @@ def read_spoofing_events(ais_conn):
     # that broadcast the 102.3 kn sentinel value (AIS SOG field = 1023, meaning
     # "unavailable") from inflating the cluster size. One broken transponder that
     # emits 400 bad rows still counts as 1 affected vessel.
-    by_region_mmsi       = defaultdict(set)
-    by_region_timestamps = defaultdict(list)
-    by_region_label      = {}
+    #
+    # Tier severity (LOW/MEDIUM/HIGH) uses only the last 7 days so that month-old
+    # events don't inflate the cluster tier. Score decay still uses most_recent
+    # from the full 30-day window so old signals fade naturally.
+    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+
+    by_region_mmsi        = defaultdict(set)   # all MMSIs (30d) — for score decay
+    by_region_mmsi_recent = defaultdict(set)   # recent MMSIs (7d) — for tier
+    by_region_timestamps  = defaultdict(list)
+    by_region_label       = {}
     for mmsi, name, lat, lon, atype, detail, detected_at in rows:
         rid, rlabel = _spoof_region(lat, lon)
         by_region_mmsi[(rid, rlabel)].add(mmsi)
         by_region_timestamps[(rid, rlabel)].append(detected_at)
         by_region_label[(rid, rlabel)] = rlabel
+        if detected_at >= recent_cutoff:
+            by_region_mmsi_recent[(rid, rlabel)].add(mmsi)
 
     signals = []
     for (rid, rlabel), mmsi_set in by_region_mmsi.items():
-        timestamps  = by_region_timestamps[(rid, rlabel)]
-        vessel_count = len(mmsi_set)   # distinct affected vessels
-        most_recent = max(timestamps)
-        first       = min(timestamps)
+        timestamps    = by_region_timestamps[(rid, rlabel)]
+        vessel_count  = len(by_region_mmsi_recent.get((rid, rlabel), set()))  # recent vessels for tier
+        most_recent   = max(timestamps)
+        first         = min(timestamps)
 
         if vessel_count >= 5:
             sev_key  = "ais_spoofing_high"

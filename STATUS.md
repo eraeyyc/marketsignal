@@ -1,5 +1,5 @@
 # MarketSignal — Project Status
-Last updated: 2026-03-28 (Bug fixes: hours_dark live update, VIP lambda correction, route cache guard)
+Last updated: 2026-03-28 (Convergence engine fixes: VIP category label, coherence floor, AIS spoofing tier window)
 
 ---
 
@@ -236,6 +236,29 @@ categories including diplomatic and strategic_lift. Fixed:
 ### 3. Route collector: empty schedule table silently skips refresh — FIXED ✓
 `MIN(cached_at)` returns `None` on empty table. Old guard `if oldest and oldest > cutoff`
 treated `None` as truthy-failing and skipped the refresh. Fixed to `if oldest is not None`.
+
+## Recent Changes (2026-03-28 — convergence engine fixes)
+
+### 4. VIP sighting category mislabel — FIXED ✓
+Diplomatic and strategic_lift VIP events were emitted with `category: "bizjet"`, putting
+them into the bizjet diminishing-returns group. A diplomatic flight in Iran and one in Saudi
+Arabia would decay each other's scores as if they were the same type of event. Fixed to
+`category: "vip_sighting"` so they form their own independent group.
+
+### 5. Coherence floor raised 2.0 → 4.0 — FIXED ✓
+`COHERENCE_FLOOR = 2.0` allowed nearly-expired signals (~7 days old) to still trigger the
+1.5× coherence multiplier. Raised to 4.0 so only signals with real current weight contribute.
+
+### 6. AIS spoofing tier uses 7-day window — FIXED ✓
+Cluster tier (LOW/MEDIUM/HIGH) was based on distinct vessel count across the full 30-day
+signal window, so month-old events could inflate HIGH tier. Now tier is calculated from
+the last 7 days only. Score decay still uses `most_recent` from the full window so old
+signals fade naturally.
+
+### Polymarket collector memory leak — restarted
+`polymarket_collector.py` had been running since 2026-03-19 (9 days) and consumed 51.6%
+RAM (508MB). Restarted — back to 7.7%. Monitor for recurrence; if it climbs again
+investigate the polling loop for accumulating data structures.
 
 ---
 
