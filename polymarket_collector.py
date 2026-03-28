@@ -34,6 +34,9 @@ import time
 import argparse
 import os
 from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -170,25 +173,15 @@ Respond ONLY with a JSON array — no markdown fences, no explanation. Each elem
 {"id": <index>, "relevant": true/false, "track": "escalation"|"deescalation"|null, "reason": "<brief reason, 10 words max>"}"""
 
 
-def classify_markets_with_claude(markets):
+CLAUDE_BATCH_SIZE = 50   # markets per API call — keeps prompt small and avoids timeouts
+
+
+def _classify_batch(batch, offset):
     """
-    Classify a batch of market questions using Claude.
-
-    Args:
-        markets: list of dicts, each with at least a 'question' key
-
-    Returns:
-        dict mapping list index → {"relevant": bool, "track": str|None, "reason": str}
-        Returns None if the API call fails (caller should fall back to keywords).
+    Classify a single batch of up to CLAUDE_BATCH_SIZE markets.
+    Returns a dict mapping absolute list index → classification, or None on error.
     """
-    if not ANTHROPIC_API_KEY:
-        return None
-
-    if not markets:
-        return {}
-
-    # Build the numbered prompt
-    lines = [f"{i}. {m.get('question', '')}" for i, m in enumerate(markets)]
+    lines = [f"{i}. {m.get('question', '')}" for i, m in enumerate(batch)]
     prompt = "Classify these prediction markets:\n\n" + "\n".join(lines)
 
     try:
@@ -227,22 +220,19 @@ def classify_markets_with_claude(markets):
 
         classifications = json.loads(text)
 
-        # Build index-keyed result
         result = {}
         for item in classifications:
             idx = item.get("id")
-            if idx is not None and 0 <= idx < len(markets):
-                result[idx] = {
+            if idx is not None and 0 <= idx < len(batch):
+                result[offset + idx] = {
                     "relevant": bool(item.get("relevant", False)),
                     "track":    item.get("track"),
                     "reason":   item.get("reason", ""),
                 }
-
         return result
 
     except json.JSONDecodeError as e:
         print(f"  [Claude] JSON parse error: {e}")
-        print(f"  [Claude] Raw response: {text[:300]}")
         return None
     except requests.RequestException as e:
         print(f"  [Claude] Request error: {e}")
@@ -250,6 +240,41 @@ def classify_markets_with_claude(markets):
     except Exception as e:
         print(f"  [Claude] Unexpected error: {e}")
         return None
+
+
+def classify_markets_with_claude(markets):
+    """
+    Classify a list of market questions using Claude, in batches.
+
+    Args:
+        markets: list of dicts, each with at least a 'question' key
+
+    Returns:
+        dict mapping list index → {"relevant": bool, "track": str|None, "reason": str}
+        Returns None if every batch fails (caller falls back to keywords).
+    """
+    if not ANTHROPIC_API_KEY:
+        return None
+
+    if not markets:
+        return {}
+
+    result = {}
+    any_success = False
+    for offset in range(0, len(markets), CLAUDE_BATCH_SIZE):
+        batch = markets[offset : offset + CLAUDE_BATCH_SIZE]
+        batch_num = offset // CLAUDE_BATCH_SIZE + 1
+        total_batches = (len(markets) + CLAUDE_BATCH_SIZE - 1) // CLAUDE_BATCH_SIZE
+        print(f"  [Claude] Batch {batch_num}/{total_batches} ({len(batch)} markets)...")
+        batch_result = _classify_batch(batch, offset)
+        if batch_result is not None:
+            result.update(batch_result)
+            any_success = True
+        else:
+            # On batch failure, fall back to keywords for this batch only
+            print(f"  [Claude] Batch {batch_num} failed — keyword fallback for these markets")
+
+    return result if any_success else None
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
