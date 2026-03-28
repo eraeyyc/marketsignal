@@ -287,9 +287,9 @@ def refresh_schedules(conn, force=False):
             """, (dep, arr, airline, WATCHED_AIRLINES[airline], fpd, now_str))
         if sched:
             refreshed += 1
+            conn.commit()  # commit each route pair — avoids holding a long write lock
         time.sleep(REQUEST_PAUSE)
 
-    conn.commit()
     print(f"  Schedule cache updated — {refreshed} active routes found")
 
 
