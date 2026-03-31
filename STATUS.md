@@ -1,5 +1,5 @@
 # MarketSignal — Project Status
-Last updated: 2026-03-28 (Convergence engine fixes: VIP category label, coherence floor, AIS spoofing tier window)
+Last updated: 2026-03-30 (Claude Code hooks: large-file guard + auto-deploy; VPS git conflict resolved)
 
 ---
 
@@ -215,6 +215,30 @@ Run with: `streamlit run dashboard.py`
 - **Page 6:** Maritime Monitor — AIS vessel counts, watchlist sightings map, spoofing log
 - **Page 7:** Route Monitor — airline route suspension table, active flags, per-route trend chart
 - **Home:** 7th metric tile — "Top Poly Edge" (largest |model − market| opportunity)
+
+---
+
+## Recent Changes (2026-03-30 — Claude Code workflow hooks)
+
+### Large-file guard hook — LIVE ✓
+PreToolUse hook in `~/.claude/settings.json` (global). Fires on any `git add` command,
+scans for files >50MB outside `.git/`, and blocks staging with a file list if found.
+Automates the manual check in CLAUDE.md. Currently would flag:
+`aircraft-database-complete.csv` and `gdelt_events.db`.
+
+### Auto-deploy hook — LIVE ✓
+PostToolUse hook in `.claude/settings.json` (project). Fires after `git push`.
+Script at `.claude/hooks/deploy.sh`:
+- Always restarts `marketsignal-dashboard`
+- Also restarts the collector service for any source file changed in the last commit
+  (adsb, notam, ais, convergence, polymarket, route)
+- SSHs to VPS, runs `git pull --ff-only`, restarts services, reports status back
+
+### VPS git conflict resolved ✓
+VPS had local edits to `polymarket_collector.py` (the dotenv + batch fix from session 2
+that was applied directly on the server before being committed locally). Discarded with
+`git checkout` since the same changes were already in origin/main. VPS pulled cleanly,
+2 commits fast-forwarded.
 
 ---
 
