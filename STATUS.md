@@ -1,5 +1,5 @@
 # MarketSignal — Project Status
-Last updated: 2026-03-30 (Claude Code hooks: large-file guard + auto-deploy; VPS git conflict resolved)
+Last updated: 2026-03-31 (Hook refinement: large-file guard moved to script, smart per-file checking; pushed to GitHub)
 
 ---
 
@@ -221,10 +221,12 @@ Run with: `streamlit run dashboard.py`
 ## Recent Changes (2026-03-30 — Claude Code workflow hooks)
 
 ### Large-file guard hook — LIVE ✓
-PreToolUse hook in `~/.claude/settings.json` (global). Fires on any `git add` command,
-scans for files >50MB outside `.git/`, and blocks staging with a file list if found.
-Automates the manual check in CLAUDE.md. Currently would flag:
-`aircraft-database-complete.csv` and `gdelt_events.db`.
+PreToolUse hook in `~/.claude/settings.json` (global). Script at `~/.claude/hooks/large-file-guard.sh`.
+Fires on any `git add` command. Smart file detection:
+- `git add .` / `-A` / `--all` / `-u` → scans entire directory for files >50MB
+- `git add <specific files>` → only checks those files (won't block unrelated large files)
+Blocks staging with a file list if found. Currently flags: `aircraft-database-complete.csv`
+and `gdelt_events.db` when using `git add .`.
 
 ### Auto-deploy hook — LIVE ✓
 PostToolUse hook in `.claude/settings.json` (project). Fires after `git push`.

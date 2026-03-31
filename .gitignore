@@ -60,3 +60,4 @@ env/
 .streamlit/secrets.toml
 gdelt_credentialsold.json
  
+.claude/worktrees/
